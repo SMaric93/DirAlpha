@@ -7,10 +7,58 @@ def load_boardex_data():
         directors = pd.read_parquet(config.RAW_BOARDEX_DIRECTORS_PATH)
         committees = pd.read_parquet(config.RAW_BOARDEX_COMMITTEES_PATH)
         link = pd.read_parquet(config.RAW_BOARDEX_LINK_PATH)
+        print("Loaded BoardEx data from local parquet.")
+        return directors, committees, link
     except FileNotFoundError:
-        print("BoardEx data not found.")
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    return directors, committees, link
+        print("BoardEx local files not found. Attempting to load from WRDS...")
+        db = config.get_wrds_connection()
+        if db:
+            print("Fetching BoardEx data from WRDS...")
+            try:
+                # Directors
+                # Need: company_id, director_id, date_start, date_end, role_name
+                # Table: boardex.na_wrds_org_composition (North America)
+                # Note: Column names might differ (e.g. 'companyid', 'directorid'). 
+                # We'll select * or specific. Let's try specific based on usage.
+                # Usage: company_id, director_id, date_start, date_end
+                
+                dir_query = f"""
+                    SELECT company_id, director_id, date_start, date_end, role_name
+                    FROM {config.WRDS_BOARDEX_DIRECTORS}
+                """
+                directors = db.raw_sql(dir_query)
+                directors.to_parquet(config.RAW_BOARDEX_DIRECTORS_PATH)
+                
+                # Committees
+                # Need: company_id, director_id, committee_name, date_start, date_end
+                com_query = f"""
+                    SELECT company_id, director_id, committee_name, date_start, date_end
+                    FROM {config.WRDS_BOARDEX_COMMITTEES}
+                """
+                committees = db.raw_sql(com_query)
+                committees.to_parquet(config.RAW_BOARDEX_COMMITTEES_PATH)
+                
+                # Link
+                # Need: gvkey <-> company_id. 
+                # Usually we link via Ticker/CUSIP from Company Profile.
+                # Profile has: company_id, ticker, isin, etc.
+                link_query = f"""
+                    SELECT company_id, ticker, isin
+                    FROM {config.WRDS_BOARDEX_PROFILE}
+                """
+                link = db.raw_sql(link_query)
+                # We need to add GVKEY to this link table. 
+                # This requires merging with Compustat/CRSP on Ticker/CUSIP.
+                # For now, we just save what we have. The linking logic is in 'link_firms_to_boardex'.
+                link.to_parquet(config.RAW_BOARDEX_LINK_PATH)
+                
+                return directors, committees, link
+            except Exception as e:
+                print(f"Error fetching BoardEx: {e}")
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        else:
+            print("BoardEx data not found and WRDS connection failed.")
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 def link_firms_to_boardex(spells, link_table):
     """

@@ -157,9 +157,31 @@ def run_phase2():
     
     try:
         execucomp = pd.read_parquet(config.RAW_EXECUCOMP_PATH)
+        print("Loaded ExecuComp data from local parquet.")
     except FileNotFoundError:
-        print("ExecuComp data not found.")
-        return
+        print("ExecuComp local file not found. Attempting to load from WRDS...")
+        db = config.get_wrds_connection()
+        if db:
+            print("Fetching ExecuComp data from WRDS...")
+            # Select relevant columns
+            # Note: 'pceo', 'ceoann' might be 'ceo_ann' depending on version.
+            # We'll select * or a broad set to be safe, but let's try specific columns.
+            # Standard ExecuComp: gvkey, year, execid, pceo, ceoann, title, tdc1, becameceo, leftofc, joined_co, age, gender
+            
+            query = f"""
+                SELECT gvkey, year, execid, pceo, ceoann, title, tdc1, becameceo, leftofc, joined_co, age, gender
+                FROM {config.WRDS_EXECUCOMP_ANNCOMP}
+                WHERE year >= 2000
+            """
+            try:
+                execucomp = db.raw_sql(query)
+                execucomp.to_parquet(config.RAW_EXECUCOMP_PATH)
+            except Exception as e:
+                print(f"Error fetching ExecuComp: {e}")
+                return
+        else:
+            print("ExecuComp data not found and WRDS connection failed.")
+            return
 
     # 1. Identify CEOs
     ceos = identify_ceos(execucomp)

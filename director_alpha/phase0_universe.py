@@ -4,22 +4,63 @@ from . import config
 
 def load_data():
     """
-    Load raw data. In a real scenario, this might query WRDS.
-    Here we load from parquet files defined in config.
+    Load raw data. Tries local parquet first, then WRDS.
     """
-    # Placeholder for loading data
-    # For now, we will assume the files exist or return empty DataFrames for structure
+    # Try loading from local parquet
     try:
         compustat = pd.read_parquet(config.RAW_COMPUSTAT_PATH)
         crsp = pd.read_parquet(config.RAW_CRSP_PATH)
         ccm = pd.read_parquet(config.RAW_CCM_PATH)
+        print("Loaded data from local parquet files.")
+        return compustat, crsp, ccm
     except FileNotFoundError:
-        print("Warning: Data files not found. Please ensure data is in the 'data' directory.")
+        print("Local files not found. Attempting to load from WRDS...")
+
+    # Connect to WRDS
+    db = config.get_wrds_connection()
+    if db is None:
+        print("WRDS connection failed. Returning empty DataFrames for structure.")
         # Return empty DFs with expected columns for code validation
         compustat = pd.DataFrame(columns=['gvkey', 'datadate', 'fyear', 'fic', 'at', 'oibdp', 'prcc_f', 'csho', 'ceq', 'dltt', 'dlc', 'xrd', 'capx', 'sich', 'naics'])
         crsp = pd.DataFrame(columns=['permno', 'date', 'shrcd', 'siccd', 'prc', 'ret'])
         ccm = pd.DataFrame(columns=['gvkey', 'lpermno', 'linkdt', 'linkenddt', 'linktype', 'linkprim'])
-    
+        return compustat, crsp, ccm
+
+    # Query WRDS
+    print("Fetching Compustat data...")
+    # Select relevant columns to reduce size
+    comp_query = f"""
+        SELECT gvkey, datadate, fyear, fic, at, oibdp, prcc_f, csho, ceq, dltt, dlc, xrd, capx, sich, naics
+        FROM {config.WRDS_COMP_FUNDA}
+        WHERE indfmt='INDL' AND datafmt='STD' AND popsrc='D' AND consol='C'
+        AND fyear >= 2000
+    """
+    compustat = db.raw_sql(comp_query)
+
+    print("Fetching CRSP data...")
+    # Fetch monthly stock file for price and returns (simplified)
+    # We need PERMNO, DATE, SHRCD, SICCD, PRC, RET
+    crsp_query = f"""
+        SELECT permno, date, shrcd, siccd, prc, ret
+        FROM {config.WRDS_CRSP_MSF}
+        WHERE date >= '2000-01-01'
+    """
+    crsp = db.raw_sql(crsp_query)
+
+    print("Fetching CCM Link Table...")
+    ccm_query = f"""
+        SELECT gvkey, lpermno, linkdt, linkenddt, linktype, linkprim
+        FROM {config.WRDS_CCM_LINK}
+        WHERE linktype IN ('LU', 'LC')
+    """
+    ccm = db.raw_sql(ccm_query)
+
+    # Save to local parquet for caching
+    print("Saving data to local parquet files...")
+    compustat.to_parquet(config.RAW_COMPUSTAT_PATH)
+    crsp.to_parquet(config.RAW_CRSP_PATH)
+    ccm.to_parquet(config.RAW_CCM_PATH)
+
     return compustat, crsp, ccm
 
 def run_phase0():

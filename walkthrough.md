@@ -1,43 +1,37 @@
-# Director Alpha Data Workflow - Walkthrough
+# WRDS Data Loading Implementation
 
-I have implemented the full data workflow for the "Director Alpha" project. The code is organized into a modular Python package `director_alpha`.
+I have refactored the codebase to support loading data directly from WRDS when local parquet files are missing. This ensures the pipeline can run in an environment with WRDS access without requiring pre-downloaded files.
 
-## Implementation Details
+## Changes
 
-### Project Structure
-- `director_alpha/config.py`: Configuration for file paths.
-- `director_alpha/phase0_universe.py`: Universe definition and filtering.
-- `director_alpha/phase1_performance.py`: Calculation of ROA, Tobin's Q, and controls.
-- `director_alpha/phase2_ceo_turnover.py`: Identification of CEO spells and turnover.
-- `director_alpha/phase3_directors.py`: Linkage of BoardEx directors to selection events, including Committee identification.
-- `director_alpha/phase4_assembly.py`: Assembly of the final analysis dataset.
-- `director_alpha/phase5_connectivity.py`: Network analysis and restriction to the connected set.
-- `main.py`: Orchestration script.
+### Configuration
+- **`config.py`**: Added `get_wrds_connection()` function and defined WRDS table names (`comp.funda`, `crsp.msf`, `comp.anncomp`, `boardex.na_wrds_org_composition`, etc.).
 
-## Verification Results
+### Phase 0: Universe Definition
+- **`phase0_universe.py`**: Updated `load_data()` to:
+    1. Attempt to load from local parquet files.
+    2. If missing, connect to WRDS and fetch Compustat, CRSP, and CCM data.
+    3. Save fetched data to local parquet files for caching.
 
-I verified the implementation by generating dummy data representing 50 firms over 10 years, with simulated CEO turnovers and director rosters.
+### Phase 1: Performance
+- **`phase1_performance.py`**: Updated `run_phase1()` to fetch CRSP monthly stock data (`crsp.msf`) from WRDS if the local file is missing, enabling stock return calculations.
 
-### Execution Log
-The workflow executed successfully with the following results:
+### Phase 2: CEO Turnover
+- **`phase2_ceo_turnover.py`**: Updated `run_phase2()` to fetch ExecuComp data (`comp.anncomp`) from WRDS if the local file is missing.
 
-1.  **Phase 0 (Universe):** Generated 500 firm-year observations.
-2.  **Phase 1 (Performance):** Calculated financial metrics for all 500 observations.
-3.  **Phase 2 (CEO Spells):** Identified 100 CEO spells (2 per firm).
-4.  **Phase 3 (Directors):** Linked 501 directors to selection events using BoardEx dummy data.
-5.  **Phase 4 (Assembly):** Assembled 501 observations with tenure-specific performance.
-6.  **Phase 5 (Connectivity):** Identified a connected component and restricted the sample to 21 observations.
+### Phase 3: Directors
+- **`phase3_directors.py`**: Updated `load_boardex_data()` to fetch BoardEx directors, committees, and company profile data from WRDS if local files are missing.
 
-### Key Logic Verified
-- **Merging:** Compustat/CRSP/CCM merging logic handles dates and linking codes.
-- **Calculations:** ROA, Tobin's Q, and industry adjustments are implemented.
-- **Turnover:** CEO turnover identification correctly handles spells.
-- **Director Linkage:** BoardEx directors are linked via CompanyID. Nomination & Governance committee members are correctly identified.
-- **Connectivity:** Network analysis correctly identifies connected components.
+## Verification
 
-## How to Run
-1.  Ensure your raw data (Parquet files) is in the `data/` directory as specified in `config.py`.
-2.  Run the main script:
-    ```bash
-    python main.py
-    ```
+I created a test file `tests/test_wrds_loading.py` that mocks the `wrds` library and verifies the data loading logic for all phases.
+
+### Test Results
+```
+tests/test_wrds_loading.py ....                                          [100%]
+============================== 4 passed in 0.99s ===============================
+```
+- `test_phase0_load_data_wrds`: Verified Compustat, CRSP, and CCM loading.
+- `test_phase1_load_crsp_wrds`: Verified CRSP loading for performance.
+- `test_phase2_load_execucomp_wrds`: Verified ExecuComp loading.
+- `test_phase3_load_boardex_wrds`: Verified BoardEx loading.

@@ -8,9 +8,35 @@ DATA_DIR = PROJECT_ROOT / "data"
 # Ensure data directory exists
 DATA_DIR.mkdir(exist_ok=True)
 
-# Database Connection (Placeholder - assuming local files or SQL connection string)
-# In a real WRDS environment, this might use wrds.Connection()
+# WRDS Connection
 WRDS_USERNAME = os.getenv("WRDS_USERNAME")
+
+def get_wrds_connection():
+    """
+    Establish a connection to WRDS.
+    Requires 'wrds' library and .pgpass file or credentials.
+    """
+    try:
+        import wrds
+        db = wrds.Connection(wrds_username=WRDS_USERNAME)
+        return db
+    except ImportError:
+        print("Error: 'wrds' library not installed.")
+        return None
+    except Exception as e:
+        print(f"Error connecting to WRDS: {e}")
+        return None
+
+# WRDS Table Names
+WRDS_COMP_FUNDA = "comp.funda"
+WRDS_CRSP_MSF = "crsp.msf" # Monthly Stock File
+WRDS_CRSP_DSF = "crsp.dsf" # Daily Stock File (if needed)
+WRDS_CCM_LINK = "crsp.ccmxpf_linktable"
+WRDS_EXECUCOMP_ANNCOMP = "comp.anncomp"
+WRDS_BOARDEX_DIRECTORS = "boardex.na_wrds_org_composition"
+WRDS_BOARDEX_COMMITTEES = "boardex.na_wrds_committee"
+WRDS_BOARDEX_PROFILE = "boardex.na_wrds_company_profile" # For linking
+
 
 # File Paths for Raw Data (if using CSV/Parquet)
 # These are placeholders. The user will need to populate the data directory.

@@ -120,12 +120,51 @@ def run_phase1():
         df[col] = df.groupby('fyear')[col].transform(winsorize_series)
 
     # 4. Stock Performance (CRSP)
-    # This would involve loading CRSP daily/monthly and calculating returns.
-    # For this script, we will assume we have the returns or calculate a placeholder.
-    # The prompt mentions "Calculate monthly and annual stock returns... for later use".
-    # We'll add a placeholder function or skip if data not available.
-    
-    print(f"Phase 1 Complete. Processed {len(df)} observations.")
+    # Load CRSP data
+    try:
+        crsp = pd.read_parquet(config.RAW_CRSP_PATH)
+        print("Loaded CRSP data from local parquet.")
+    except FileNotFoundError:
+        print("CRSP local file not found. Attempting to load from WRDS...")
+        db = config.get_wrds_connection()
+        if db:
+            print("Fetching CRSP data from WRDS...")
+            crsp_query = f"""
+                SELECT permno, date, shrcd, siccd, prc, ret
+                FROM {config.WRDS_CRSP_MSF}
+                WHERE date >= '2000-01-01'
+            """
+            crsp = db.raw_sql(crsp_query)
+            crsp.to_parquet(config.RAW_CRSP_PATH)
+        else:
+            print("Could not load CRSP data.")
+            crsp = pd.DataFrame()
+
+    if not crsp.empty:
+        # Calculate Annual Returns
+        # Simple approximation: Compound monthly returns by permno-year
+        crsp['date'] = pd.to_datetime(crsp['date'])
+        crsp['year'] = crsp['date'].dt.year
+        
+        # Fill missing returns with 0 for compounding? Or skip?
+        # Better to drop missing.
+        crsp = crsp.dropna(subset=['ret'])
+        
+        # Group by permno, year and compound
+        # (1+r1)*(1+r2)... - 1
+        annual_ret = crsp.groupby(['permno', 'year'])['ret'].apply(lambda x: np.prod(1 + x) - 1).reset_index()
+        annual_ret = annual_ret.rename(columns={'ret': 'ann_ret'})
+        
+        # Merge to df
+        # df has 'permno' and 'fyear'. We'll match 'year' to 'fyear'.
+        # Note: Fiscal year vs Calendar year. This is an approximation.
+        
+        df = pd.merge(df, annual_ret, left_on=['permno', 'fyear'], right_on=['permno', 'year'], how='left')
+        df = df.drop(columns=['year'])
+        
+        print("Calculated annual stock returns.")
+    else:
+        print("Skipping stock returns calculation.")
     
     # Save (overwriting or new file? Prompt implies building up. We can overwrite or save as new step)
     # Let's save as firm_year_performance.parquet to be safe.
