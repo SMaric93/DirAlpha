@@ -14,23 +14,6 @@ DATA_DIR.mkdir(exist_ok=True)
 
 # WRDS Connection
 WRDS_USERNAME = os.getenv("WRDS_USERNAME")
-WRDS_PASSWORD = os.getenv("WRDS_PASSWORD")
-
-def get_wrds_connection():
-    """
-    Establish a connection to WRDS.
-    Requires 'wrds' library and .pgpass file or credentials.
-    """
-    try:
-        import wrds
-        db = wrds.Connection(wrds_username=WRDS_USERNAME)
-        return db
-    except ImportError:
-        print("Error: 'wrds' library not installed.")
-        return None
-    except Exception as e:
-        print(f"Error connecting to WRDS: {e}")
-        return None
 
 # WRDS Table Names
 WRDS_COMP_FUNDA = "comp.funda"
