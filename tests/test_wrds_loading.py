@@ -26,7 +26,12 @@ def mock_read_parquet():
         mock_read.side_effect = FileNotFoundError
         yield mock_read
 
-def test_phase0_load_data_wrds(mock_wrds_connection, mock_read_parquet):
+@pytest.fixture
+def mock_to_parquet():
+    with patch("pandas.DataFrame.to_parquet") as mock_to:
+        yield mock_to
+
+def test_phase0_load_data_wrds(mock_wrds_connection, mock_read_parquet, mock_to_parquet):
     # Setup mock return values
     mock_wrds_connection.raw_sql.return_value = pd.DataFrame({'col': [1, 2]})
     
@@ -38,8 +43,10 @@ def test_phase0_load_data_wrds(mock_wrds_connection, mock_read_parquet):
     assert not comp.empty
     assert not crsp.empty
     assert not ccm.empty
+    # Verify to_parquet was called but didn't write to disk
+    assert mock_to_parquet.called
 
-def test_phase1_load_crsp_wrds(mock_wrds_connection, mock_read_parquet):
+def test_phase1_load_crsp_wrds(mock_wrds_connection, mock_read_parquet, mock_to_parquet):
     # Setup mock return values
     mock_wrds_connection.raw_sql.return_value = pd.DataFrame({'permno': [1], 'date': ['2020-01-01'], 'ret': [0.1]})
     
@@ -67,7 +74,7 @@ def test_phase1_load_crsp_wrds(mock_wrds_connection, mock_read_parquet):
     assert mock_wrds_connection.raw_sql.called
     assert "SELECT permno" in mock_wrds_connection.raw_sql.call_args[0][0]
 
-def test_phase2_load_execucomp_wrds(mock_wrds_connection, mock_read_parquet):
+def test_phase2_load_execucomp_wrds(mock_wrds_connection, mock_read_parquet, mock_to_parquet):
     # Setup mock
     mock_wrds_connection.raw_sql.return_value = pd.DataFrame({
         'gvkey': ['1'], 'year': [2020], 'execid': ['1'], 'pceo': ['CEO'], 'ceoann': ['CEO'],
@@ -83,7 +90,7 @@ def test_phase2_load_execucomp_wrds(mock_wrds_connection, mock_read_parquet):
     assert "SELECT gvkey" in mock_wrds_connection.raw_sql.call_args[0][0]
     assert not df.empty
 
-def test_phase3_load_boardex_wrds(mock_wrds_connection, mock_read_parquet):
+def test_phase3_load_boardex_wrds(mock_wrds_connection, mock_read_parquet, mock_to_parquet):
     # Setup mock
     mock_wrds_connection.raw_sql.return_value = pd.DataFrame({'col': [1]})
     

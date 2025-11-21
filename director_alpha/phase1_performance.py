@@ -130,7 +130,7 @@ def run_phase1():
         if db:
             print("Fetching CRSP data from WRDS...")
             crsp_query = f"""
-                SELECT permno, date, shrcd, siccd, prc, ret
+                SELECT permno, date, prc, ret
                 FROM {config.WRDS_CRSP_MSF}
                 WHERE date >= '2000-01-01'
             """

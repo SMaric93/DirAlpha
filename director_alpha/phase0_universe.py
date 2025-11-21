@@ -30,7 +30,7 @@ def load_data():
     print("Fetching Compustat data...")
     # Select relevant columns to reduce size
     comp_query = f"""
-        SELECT gvkey, datadate, fyear, fic, at, oibdp, prcc_f, csho, ceq, dltt, dlc, xrd, capx, sich, naics
+        SELECT gvkey, datadate, fyear, fic, at, oibdp, prcc_f, csho, ceq, dltt, dlc, xrd, capx, sich, naicsh as naics
         FROM {config.WRDS_COMP_FUNDA}
         WHERE indfmt='INDL' AND datafmt='STD' AND popsrc='D' AND consol='C'
         AND fyear >= 2000
@@ -38,12 +38,15 @@ def load_data():
     compustat = db.raw_sql(comp_query)
 
     print("Fetching CRSP data...")
-    # Fetch monthly stock file for price and returns (simplified)
-    # We need PERMNO, DATE, SHRCD, SICCD, PRC, RET
+    # Fetch monthly stock file for price and returns
+    # Join with msenames to get shrcd and siccd
     crsp_query = f"""
-        SELECT permno, date, shrcd, siccd, prc, ret
-        FROM {config.WRDS_CRSP_MSF}
-        WHERE date >= '2000-01-01'
+        SELECT a.permno, a.date, b.shrcd, b.siccd, a.prc, a.ret
+        FROM {config.WRDS_CRSP_MSF} a
+        JOIN {config.WRDS_CRSP_MSENAMES} b
+        ON a.permno = b.permno
+        AND a.date >= b.namedt AND a.date <= b.nameendt
+        WHERE a.date >= '2000-01-01'
     """
     crsp = db.raw_sql(crsp_query)
 

@@ -1,5 +1,9 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Project Root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -10,6 +14,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 # WRDS Connection
 WRDS_USERNAME = os.getenv("WRDS_USERNAME")
+WRDS_PASSWORD = os.getenv("WRDS_PASSWORD")
 
 def get_wrds_connection():
     """
@@ -30,11 +35,12 @@ def get_wrds_connection():
 # WRDS Table Names
 WRDS_COMP_FUNDA = "comp.funda"
 WRDS_CRSP_MSF = "crsp.msf" # Monthly Stock File
+WRDS_CRSP_MSENAMES = "crsp.msenames" # Monthly Stock Event - Names
 WRDS_CRSP_DSF = "crsp.dsf" # Daily Stock File (if needed)
 WRDS_CCM_LINK = "crsp.ccmxpf_linktable"
-WRDS_EXECUCOMP_ANNCOMP = "comp.anncomp"
+WRDS_EXECUCOMP_ANNCOMP = "execcomp.anncomp"
 WRDS_BOARDEX_DIRECTORS = "boardex.na_wrds_org_composition"
-WRDS_BOARDEX_COMMITTEES = "boardex.na_wrds_committee"
+WRDS_BOARDEX_COMMITTEES = "boardex.na_board_dir_committees"
 WRDS_BOARDEX_PROFILE = "boardex.na_wrds_company_profile" # For linking
 
 
