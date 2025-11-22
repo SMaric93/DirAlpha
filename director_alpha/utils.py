@@ -176,7 +176,7 @@ def fetch_boardex_directors(db) -> pd.DataFrame:
     """Fetch BoardEx Directors (Composition)."""
     query = f"""
         SELECT
-            boardid       AS company_id,
+            companyid     AS company_id,
             directorid    AS director_id,
             datestartrole AS date_start,
             dateendrole   AS date_end,
@@ -208,27 +208,60 @@ def fetch_boardex_committees(db) -> pd.DataFrame:
 def fetch_boardex_link(db) -> pd.DataFrame:
     """
     Build BoardEx–CRSP–CCM link table.
-    Note: This involves multiple queries and joins.
+    Optimized to avoid OOM by filtering CRSP stocknames server-side using an IN clause.
     """
     # 1. BoardEx Profile
-    prof_query = f"SELECT boardid, ticker, isin FROM {config.WRDS_BOARDEX_PROFILE}"
+    logger.info("Fetching BoardEx profile...")
+    prof_query = f"SELECT boardid, ticker, isin FROM {config.WRDS_BOARDEX_PROFILE} WHERE ticker IS NOT NULL"
     prof = db.raw_sql(prof_query)
     prof["boardid"] = prof["boardid"].astype(str)
     if "ticker" in prof.columns:
         prof["ticker"] = prof["ticker"].astype(str).str.upper().str.strip()
     
     prof = prof.dropna(subset=["ticker"])
+    prof = prof[prof["ticker"] != ""]
+    
     if prof.empty:
+        logger.warning("BoardEx profile has no valid tickers.")
         return pd.DataFrame(columns=["company_id", "ticker", "isin", "gvkey"])
 
-    # 2. CRSP Stocknames
+    # 2. CRSP Stocknames (Optimized)
+    # Use IN clause to filter CRSP server-side
+    unique_tickers = prof["ticker"].unique().tolist()
+    logger.info(f"Filtering CRSP stocknames for {len(unique_tickers)} unique BoardEx tickers...")
+    
     sn_table = getattr(config, "WRDS_CRSP_STOCKNAMES", "crsp.stocknames")
-    sn_query = f"SELECT permno, ticker FROM {sn_table}"
-    sn = db.raw_sql(sn_query)
+    
+    # Chunking to be safe (Postgres handles large queries, but let's be robust)
+    chunk_size = 1000
+    sn_dfs = []
+    
+    for i in range(0, len(unique_tickers), chunk_size):
+        chunk = unique_tickers[i:i + chunk_size]
+        # Escape single quotes just in case
+        chunk_str = ",".join(["'" + t.replace("'", "''") + "'" for t in chunk])
+        
+        sn_query = f"""
+            SELECT permno, ticker 
+            FROM {sn_table} 
+            WHERE ticker IN ({chunk_str})
+        """
+        try:
+            df_chunk = db.raw_sql(sn_query)
+            sn_dfs.append(df_chunk)
+        except Exception as e:
+            logger.warning(f"Failed to fetch chunk {i}-{i+chunk_size}: {e}")
+
+    if not sn_dfs:
+        logger.warning("No matching CRSP stocknames found.")
+        return pd.DataFrame(columns=["company_id", "ticker", "isin", "gvkey"])
+
+    sn = pd.concat(sn_dfs, ignore_index=True)
     sn["ticker"] = sn["ticker"].astype(str).str.upper().str.strip()
     sn = sn.drop_duplicates(subset=["permno", "ticker"])
 
     # 3. CCM Link
+    logger.info("Fetching CCM link table...")
     ccm_table = getattr(config, "WRDS_CCM_LINKTABLE", "crsp.ccmxpf_linktable")
     ccm_query = f"""
         SELECT gvkey, lpermno AS permno, linktype, linkprim
@@ -239,7 +272,8 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     ccm = ccm.dropna(subset=["permno", "gvkey"])
 
     # Merge
-    m1 = pd.merge(prof, sn, on="ticker", how="left", validate="m:m")
+    logger.info("Merging tables...")
+    m1 = pd.merge(prof, sn, on="ticker", how="inner", validate="m:m") # Inner join to keep only linked
     m2 = pd.merge(m1, ccm, on="permno", how="left", validate="m:m")
 
     cols = ["boardid", "ticker", "isin"]
@@ -250,6 +284,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     link = m2[cols].drop_duplicates().rename(columns={"boardid": "company_id"})
     link["company_id"] = link["company_id"].astype(str)
     
+    logger.info(f"Built link table with {len(link)} rows.")
     return link
 
 # ---------------------------------------------------------------------

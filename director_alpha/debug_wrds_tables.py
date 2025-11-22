@@ -1,20 +1,27 @@
 import wrds
-from . import config
+from . import config, utils
 
-def describe_committee_table():
+def search_link_tables():
     print("Connecting to WRDS...")
-    db = config.get_wrds_connection()
+    try:
+        db = utils.get_db()
+    except Exception as e:
+        print(f"Failed to connect: {e}")
+        return
+
     if db:
-        print("Connected. Describing 'boardex.na_board_dir_committees'...")
-        try:
-            desc = db.describe_table(library="boardex", table="na_board_dir_committees")
-            print("\n--- Table Columns ---")
-            print(desc)
-            print("---------------------\n")
-        except Exception as e:
-            print(f"Error describing table: {e}")
+        libraries = ["boardex", "wrds_apps", "wrds_lib"]
+        for lib in libraries:
+            print(f"\nSearching in '{lib}'...")
+            try:
+                tables = db.list_tables(library=lib)
+                for table in tables:
+                    if "link" in table or "gvkey" in table or "mapping" in table:
+                        print(f"FOUND: {lib}.{table}")
+            except Exception as e:
+                print(f"Error listing {lib}: {e}")
     else:
         print("Failed to connect to WRDS.")
 
 if __name__ == "__main__":
-    describe_committee_table()
+    search_link_tables()
