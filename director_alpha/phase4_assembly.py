@@ -82,14 +82,26 @@ def run_phase4():
     
     # 2. Get Controls (T-1)
     controls = get_controls(spells, firm_year)
+
+    # 3. Load Event Study Results (Phase 3b)
+    try:
+        event_study = pd.read_parquet(config.EVENT_STUDY_RESULTS_PATH)
+        # Keep only spell_id and return metrics
+        es_cols = [c for c in event_study.columns if c not in ['gvkey', 'appointment_date', 'permno']]
+        event_study = event_study[es_cols]
+    except FileNotFoundError:
+        print("Event study results not found (Phase 3b skipped?). Proceeding without returns.")
+        # pyrefly: ignore [bad-argument-type]
+        event_study = pd.DataFrame(columns=['spell_id'])
     
-    # 3. Merge everything onto Linkage
+    # 4. Merge everything onto Linkage
     # Linkage is Director-Spell level.
-    # Merge Spell info (Performance, Controls, CEO Characteristics) onto Linkage.
+    # Merge Spell info (Performance, Controls, CEO Characteristics, Returns) onto Linkage.
     
     # First merge spell attributes to spells
     spells_full = pd.merge(spells, perf, on='spell_id', how='left')
     spells_full = pd.merge(spells_full, controls, on='spell_id', how='left')
+    spells_full = pd.merge(spells_full, event_study, on='spell_id', how='left')
     
     # Now merge to Linkage
     analysis = pd.merge(linkage, spells_full, on=['spell_id', 'gvkey', 'appointment_date'], how='inner')
@@ -97,9 +109,15 @@ def run_phase4():
     # Add Cohort Year
     analysis['cohort_year'] = pd.to_datetime(analysis['appointment_date']).dt.year
     
-    print(f"Phase 4 Complete. Assembled {len(analysis)} observations for analysis.")
-    
     analysis.to_parquet(config.ANALYSIS_HDFE_PATH)
+    
+    # Also save as CSV
+    csv_path = config.ANALYSIS_HDFE_CSV_PATH
+    analysis.to_csv(csv_path, index=False)
+    
+    print(f"Phase 4 Complete. Assembled {len(analysis)} observations for analysis.")
+    print(f"Saved to {config.ANALYSIS_HDFE_PATH} and {csv_path}")
+    
     return analysis
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ def search_link_tables():
             print(f"\nSearching in '{lib}'...")
             try:
                 tables = db.list_tables(library=lib)
+                # pyrefly: ignore [not-iterable]
                 for table in tables:
                     if "link" in table or "gvkey" in table or "mapping" in table:
                         print(f"FOUND: {lib}.{table}")

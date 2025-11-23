@@ -36,6 +36,7 @@ def test_phase0_load_data_wrds(mock_wrds_connection, mock_read_parquet, mock_to_
     mock_wrds_connection.raw_sql.return_value = pd.DataFrame({'col': [1, 2]})
     
     # Run
+    # pyrefly: ignore [missing-attribute]
     comp, crsp, ccm = phase0_universe.load_data()
     
     # Verify
@@ -88,6 +89,7 @@ def test_phase2_load_execucomp_wrds(mock_wrds_connection, mock_read_parquet, moc
     # Verify
     assert mock_wrds_connection.raw_sql.called
     assert "SELECT gvkey" in mock_wrds_connection.raw_sql.call_args[0][0]
+    # pyrefly: ignore [missing-attribute]
     assert not df.empty
 
 def test_phase3_load_boardex_wrds(mock_wrds_connection, mock_read_parquet, mock_to_parquet):

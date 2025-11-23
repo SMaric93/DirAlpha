@@ -1,38 +1,45 @@
 import pandas as pd
 import numpy as np
+import re
 from . import config, utils
 
-def identify_ceos(execucomp):
+def identify_ceos_no_coceo(execucomp, firm_col="gvkey", year_col="year"):
     """
-    Identify the primary CEO for each firm-year.
+    Identify the primary CEO for each firm-year in ExecuComp-style data,
+    dropping any firm-years with multiple CEOs (co-CEOs).
+
+    Keeps only firm-years where exactly one executive has CEOANN == 'CEO'.
     """
     df = execucomp.copy()
-    # Normalize CEO flags
-    # PCEO is often 'CEO' or similar string, CEOANN is the legacy.
-    if 'pceo' not in df.columns: df['pceo'] = None
-    if 'ceoann' not in df.columns: df['ceoann'] = None
-    
-    is_ceo = (df['pceo'] == 'CEO') | (df['ceoann'] == 'CEO')
-    ceos = df[is_ceo].copy()
-    
-    # Handling Co-CEOs: Tie-breaking rule
-    def resolve_ties(group):
-        if len(group) == 1:
-            return group
-        
-        # Prioritize Chairman
-        if 'title' in group.columns:
-            is_chair = group['title'].str.contains('Chair', case=False, na=False)
-            if is_chair.sum() == 1:
-                return group[is_chair]
-        
-        # Prioritize highest TDC1
-        if 'tdc1' in group.columns:
-            return group.sort_values('tdc1', ascending=False).head(1)
-            
-        return group.head(1)
 
-    ceos = ceos.groupby(['gvkey', 'year']).apply(resolve_ties).reset_index(drop=True)
+    # ---- Sanity checks ----
+    required = {firm_col, year_col, "ceoann"}
+    missing = required - set(df.columns)
+    if missing:
+        raise KeyError(f"Missing required columns: {missing}")
+
+    # ---- CEO flag based on CEOANN only (historical) ----
+    ceo_flag = (
+        df["ceoann"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .eq("CEO")
+    )
+    ceos = df[ceo_flag].copy()
+
+    # ---- Drop firm-years with more than one CEO (co-CEOs) ----
+    counts = (
+        ceos.groupby([firm_col, year_col])
+            .size()
+            .rename("n_ceos")
+            .reset_index()
+    )
+
+    # Keep only firm-years with exactly one CEO
+    single_ceo_keys = counts[counts["n_ceos"] == 1][[firm_col, year_col]]
+    ceos = ceos.merge(single_ceo_keys, on=[firm_col, year_col], how="inner")
+
     return ceos
 
 def identify_turnover(ceos):
@@ -61,27 +68,67 @@ def determine_dates(ceos):
     ceos['joined_co'] = pd.to_datetime(ceos['joined_co'], errors='coerce')
     return ceos
 
-def filter_interim(spells):
+# Match "interim/acting" + "CEO/chief executive" in either order, with separators
+INTERIM_CEO_PATTERN = re.compile(
+    r"(?:(?:interim|acting)[ ,();-]*(?:ceo|chief executive))|"
+    r"(?:(?:ceo|chief executive)[ ,();-]*(?:interim|acting))",
+    flags=re.IGNORECASE,
+)
+
+def filter_interim(spells: pd.DataFrame) -> pd.DataFrame:
     """
-    Exclude interim CEOs and short spells.
+    Exclude interim/acting CEOs (based on title) and short non-censored spells.
+
+    Logic:
+    - Drop rows whose title indicates an interim/acting CEO.
+    - Define spell_end as leftofc if available, otherwise the next appointment_date
+      within the same gvkey.
+    - Compute duration = spell_end - appointment_date (in days).
+    - Drop spells with observed duration < 365 days.
+    - Keep spells with censored duration (spell_end is NaT).
+
+    Assumes:
+      - 'gvkey' identifies firms.
+      - 'appointment_date' is the start of the CEO spell.
+      - 'leftofc' is the CEO's known departure date (if any).
     """
-    if 'title' in spells.columns:
-        is_interim = spells['title'].str.contains('Interim', case=False, na=False)
+    spells = spells.copy()
+
+    # ---- Required columns ----
+    required = {"gvkey", "appointment_date", "leftofc"}
+    missing = required - set(spells.columns)
+    if missing:
+        raise KeyError(f"Missing required columns in spells: {missing}")
+
+    # ---- Ensure datetime types ----
+    spells["appointment_date"] = pd.to_datetime(spells["appointment_date"])
+    spells["leftofc"] = pd.to_datetime(spells["leftofc"])
+
+    # ---- Drop interim / acting CEOs based on title ----
+    if "title" in spells.columns:
+        is_interim = (
+            spells["title"]
+            .astype(str)
+            .str.contains(INTERIM_CEO_PATTERN, na=False)
+        )
         spells = spells[~is_interim]
-    
-    # Calculate spell end date
-    spells = spells.sort_values(['gvkey', 'appointment_date'])
-    spells['next_appointment'] = spells.groupby('gvkey')['appointment_date'].shift(-1)
-    
-    spells['spell_end'] = spells['leftofc']
-    spells['spell_end'] = spells['spell_end'].fillna(spells['next_appointment'])
-    
-    duration = (spells['spell_end'] - spells['appointment_date']).dt.days
-    
-    # Filter < 365 days, but keep if NaT (censored)
-    short_spell = (duration < 365) & (duration.notna())
-    
+
+    # ---- Compute spell end: leftofc or next appointment within gvkey ----
+    spells = spells.sort_values(["gvkey", "appointment_date"])
+    spells["next_appointment"] = spells.groupby("gvkey")["appointment_date"].shift(-1)
+
+    # Use leftofc if known, otherwise next appointment
+    spells["spell_end"] = spells["leftofc"].where(
+        spells["leftofc"].notna(), spells["next_appointment"]
+    )
+
+    # ---- Duration and short-spell filter ----
+    duration = (spells["spell_end"] - spells["appointment_date"]).dt.days
+
+    # Drop spells < 365 days when duration is observed; keep censored spells
+    short_spell = duration.notna() & (duration < 365)
     spells = spells[~short_spell]
+
     return spells
 
 def classify_hires(spells):
@@ -108,10 +155,11 @@ def run_phase2():
         return
 
     # Normalize GVKEY
+    # pyrefly: ignore [bad-argument-type]
     execucomp['gvkey'] = utils.normalize_gvkey(execucomp['gvkey'])
 
     # 1. Identify CEOs
-    ceos = identify_ceos(execucomp)
+    ceos = identify_ceos_no_coceo(execucomp)
     
     # 2. Identify Turnover
     ceos = identify_turnover(ceos)

@@ -45,4 +45,17 @@ INTERMEDIATE_DIR.mkdir(exist_ok=True)
 FIRM_YEAR_BASE_PATH = INTERMEDIATE_DIR / "firm_year_base.parquet"
 CEO_SPELLS_PATH = INTERMEDIATE_DIR / "ceo_spells.parquet"
 DIRECTOR_LINKAGE_PATH = INTERMEDIATE_DIR / "director_linkage.parquet"
+DIRECTOR_LINKAGE_CSV_PATH = INTERMEDIATE_DIR / "director_linkage.csv"
 ANALYSIS_HDFE_PATH = DATA_DIR / "analysis_hdfe.parquet"
+ANALYSIS_HDFE_CSV_PATH = DATA_DIR / "analysis_hdfe.csv"
+
+# Phase 6: Event Study
+WRDS_FF_FACTORS_DAILY = "ff.factors_daily"
+WRDS_FF5_FACTORS_DAILY = "ff.fivefactors_daily"
+WRDS_CRSP_DSEDELIST = "crsp.dsedelist"
+
+RAW_CRSP_DSF_PATH = DATA_DIR / "crsp_dsf.parquet"
+RAW_FF_FACTORS_PATH = DATA_DIR / "ff_factors.parquet"
+RAW_FF5_FACTORS_DAILY_PATH = DATA_DIR / "ff5_factors_daily.parquet"
+EVENT_STUDY_RESULTS_PATH = INTERMEDIATE_DIR / "event_study_results.parquet"
+EVENT_STUDY_RESULTS_CSV_PATH = INTERMEDIATE_DIR / "event_study_results.csv"

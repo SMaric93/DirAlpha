@@ -32,13 +32,17 @@ def run_phase0():
     
     # Filter CCM link table (redundant if fetcher does it, but safe to keep)
     ccm = ccm[ccm['linktype'].isin(['LU', 'LC'])]
+    # pyrefly: ignore [missing-attribute]
     ccm = ccm[ccm['linkprim'].isin(['P', 'C'])]
     
     # Normalize keys
+    # pyrefly: ignore [bad-argument-type]
     compustat['gvkey'] = utils.normalize_gvkey(compustat['gvkey'])
+    # pyrefly: ignore [bad-argument-type]
     ccm['gvkey'] = utils.normalize_gvkey(ccm['gvkey'])
     
     # Simple merge on gvkey
+    # pyrefly: ignore [bad-argument-type]
     merged = pd.merge(compustat, ccm, on='gvkey', how='inner')
     
     # Date filtering for link validity
@@ -49,6 +53,7 @@ def run_phase0():
     merged = merged[(merged['datadate'] >= merged['linkdt']) & (merged['datadate'] <= merged['linkenddt'])]
     
     # Rename lpermno to permno for CRSP merge
+    # pyrefly: ignore [no-matching-overload]
     merged = merged.rename(columns={'lpermno': 'permno'})
     
     # 3. Apply Standard Filters
@@ -64,6 +69,7 @@ def run_phase0():
     condition_fin = (merged['sich'] >= 6000) & (merged['sich'] <= 6999)
     condition_util = (merged['sich'] >= 4900) & (merged['sich'] <= 4949)
     
+    # pyrefly: ignore [deprecated]
     merged = merged[~(condition_fin | condition_util)]
     
     # 4. Merge with CRSP to check Share Code (SHRCD)
@@ -72,11 +78,13 @@ def run_phase0():
     crsp['date'] = pd.to_datetime(crsp['date'])
     crsp['year'] = crsp['date'].dt.year
     
+    # pyrefly: ignore [missing-attribute]
     merged['year'] = merged['datadate'].dt.year
     
     # Get annual share code snapshot (first of year)
     crsp_annual = crsp.groupby(['permno', 'year'])['shrcd'].first().reset_index()
     
+    # pyrefly: ignore [bad-argument-type]
     final_df = pd.merge(merged, crsp_annual, on=['permno', 'year'], how='inner')
     
     # Require common stock (SHRCD 10 or 11)
@@ -89,6 +97,7 @@ def run_phase0():
     
     utils.logger.info(f"Phase 0 Complete. Generated {len(firm_year_base)} firm-year observations.")
     
+    # pyrefly: ignore [missing-attribute]
     firm_year_base.to_parquet(config.FIRM_YEAR_BASE_PATH)
     return firm_year_base
 

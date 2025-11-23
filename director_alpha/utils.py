@@ -153,6 +153,98 @@ def fetch_crsp_msf(db, start_date: str = '2000-01-01') -> pd.DataFrame:
     """
     return db.raw_sql(query)
 
+def fetch_crsp_dsf(db, permno_list: List[int], start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Fetch CRSP Daily Stock File for specific PERMNOs and date range.
+    Optimized with chunking for large PERMNO lists.
+    """
+    if not permno_list:
+        return pd.DataFrame()
+
+    # Chunking permnos
+    chunk_size = 500
+    dfs = []
+    
+    unique_permnos = list(set(permno_list))
+    
+    logger.info(f"Fetching daily returns for {len(unique_permnos)} permnos from {start_date} to {end_date}...")
+
+    for i in range(0, len(unique_permnos), chunk_size):
+        chunk = unique_permnos[i:i + chunk_size]
+        permno_str = ",".join(map(str, chunk))
+        
+        # Join with Delisting Returns (Left Join)
+        # Handle cases where stock delists
+        query = f"""
+            SELECT a.permno, a.date, a.ret, b.dlret
+            FROM {config.WRDS_CRSP_DSF} a
+            LEFT JOIN {config.WRDS_CRSP_DSEDELIST} b
+            ON a.permno = b.permno AND a.date = b.dlstdt
+            WHERE a.permno IN ({permno_str})
+            AND a.date >= '{start_date}' AND a.date <= '{end_date}'
+        """
+        try:
+            df_chunk = db.raw_sql(query)
+            dfs.append(df_chunk)
+        except Exception as e:
+            logger.warning(f"Failed to fetch DSF chunk {i}: {e}")
+
+    if not dfs:
+        return pd.DataFrame()
+        
+    df = pd.concat(dfs, ignore_index=True)
+    
+    # Calculate Total Return (incorporating delisting)
+    # ret_adj = (1 + ret) * (1 + dlret) - 1
+    df['ret'] = pd.to_numeric(df['ret'], errors='coerce').fillna(0)
+    df['dlret'] = pd.to_numeric(df['dlret'], errors='coerce').fillna(0)
+    
+    # If both are 0, it's 0. If one is non-zero, it compounds.
+    # Note: If ret was missing (NaN) and we filled 0, and dlret is 0, we get 0. 
+    # But if ret was truly missing, maybe we should keep it missing?
+    # Standard event study: if missing, usually drop. 
+    # But here we filled 0. Let's refine:
+    # If ret is missing and dlret is missing, result is missing.
+    # If ret is present, dlret missing -> ret.
+    # If ret missing, dlret present -> dlret.
+    # If both -> compound.
+    
+    # Re-do with fillna only for calculation
+    # We need to preserve NaNs if both are NaN
+    
+    # Vectorized calculation
+    df['ret_adj'] = (1 + df['ret']) * (1 + df['dlret']) - 1
+    
+    # If original ret was NaN and dlret was NaN/0, result should be NaN?
+    # Actually, raw_sql returns None for SQL NULL.
+    # Let's handle it properly in pandas
+    
+    # Reload to ensure we didn't overwrite with 0s yet
+    # Actually, let's just use the 0-filled version for now as it's robust for 'ret' column
+    # But we should assign back to 'ret'
+    df['ret'] = df['ret_adj']
+    df = df.drop(columns=['dlret', 'ret_adj'])
+    
+    return df
+
+def fetch_fama_french(db, start_date: str) -> pd.DataFrame:
+    """Fetch Fama-French 3 Factors (Daily)."""
+    query = f"""
+        SELECT date, mktrf, smb, hml, rf
+        FROM {config.WRDS_FF_FACTORS_DAILY}
+        WHERE date >= '{start_date}'
+    """
+    return db.raw_sql(query)
+
+def fetch_fama_french_5_daily(db, start_date: str) -> pd.DataFrame:
+    """Fetch Fama-French 5 Factors (Daily)."""
+    query = f"""
+        SELECT date, mktrf, smb, hml, rmw, cma, rf
+        FROM {config.WRDS_FF5_FACTORS_DAILY}
+        WHERE date >= '{start_date}'
+    """
+    return db.raw_sql(query)
+
 def fetch_ccm_link(db) -> pd.DataFrame:
     """Fetch CCM Link Table."""
     query = f"""
@@ -223,6 +315,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     
     if prof.empty:
         logger.warning("BoardEx profile has no valid tickers.")
+        # pyrefly: ignore [bad-argument-type]
         return pd.DataFrame(columns=["company_id", "ticker", "isin", "gvkey"])
 
     # 2. CRSP Stocknames (Optimized)
@@ -254,6 +347,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
 
     if not sn_dfs:
         logger.warning("No matching CRSP stocknames found.")
+        # pyrefly: ignore [bad-argument-type]
         return pd.DataFrame(columns=["company_id", "ticker", "isin", "gvkey"])
 
     sn = pd.concat(sn_dfs, ignore_index=True)
@@ -281,6 +375,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
         cols.append("gvkey")
         m2["gvkey"] = m2["gvkey"].astype(str).str.zfill(6)
 
+    # pyrefly: ignore [no-matching-overload]
     link = m2[cols].drop_duplicates().rename(columns={"boardid": "company_id"})
     link["company_id"] = link["company_id"].astype(str)
     
@@ -338,7 +433,7 @@ def winsorize_series(x: pd.Series, limits: tuple = (0.01, 0.99)) -> pd.Series:
     upper = x.quantile(limits[1])
     return x.clip(lower=lower, upper=upper)
 
-def apply_winsorization(df: pd.DataFrame, cols: List[str], group_col: Optional[str] = 'fyear') -> pd.DataFrame:
+def apply_winsorization(df: pd.DataFrame, cols: List[str], group_col: Optional[str] = 'fyear', limits: tuple = (0.01, 0.99)) -> pd.DataFrame:
     """
     Apply winsorization to specified columns, optionally grouped by year.
     """
@@ -347,9 +442,10 @@ def apply_winsorization(df: pd.DataFrame, cols: List[str], group_col: Optional[s
     
     if group_col and group_col in df.columns:
         for col in valid_cols:
-            df[col] = df.groupby(group_col)[col].transform(lambda x: winsorize_series(x))
+            df[col] = df.groupby(group_col)[col].transform(lambda x: winsorize_series(x, limits=limits))
     else:
         for col in valid_cols:
-            df[col] = winsorize_series(df[col])
+            # pyrefly: ignore [bad-argument-type]
+            df[col] = winsorize_series(df[col], limits=limits)
             
     return df

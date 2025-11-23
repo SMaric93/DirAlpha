@@ -62,11 +62,34 @@ Links firms to BoardEx and identifies director characteristics (Nomination Commi
 python -m director_alpha.phase3_directors
 ```
 
-### 5. Phase 4: Assembly
+### 5. Phase 3b: Event Study Returns
+Calculates Cumulative Abnormal Returns (CAR) and Buy-and-Hold Abnormal Returns (BHAR) around CEO appointment dates using CAPM and Fama-French 3-Factor models.
+```bash
+python -m director_alpha.phase3b_returns
+```
+
+### 6. Phase 4: Assembly
 Merges all data into a final analysis dataset (`data/analysis_hdfe.parquet`).
 ```bash
 python -m director_alpha.phase4_assembly
 ```
+
+### 7. Phase 5: Connectivity Analysis
+Performs connectivity analysis on the director-firm network to identify the largest connected component.
+```bash
+python -m director_alpha.phase5_connectivity
+```
+
+## Output Files
+
+| Phase | File | Description |
+|-------|------|-------------|
+| 0-1 | `data/intermediate/firm_year_base.parquet` | Base universe with financials and performance metrics. |
+| 2 | `data/intermediate/ceo_spells.parquet` | CEO tenure spells. |
+| 3 | `data/intermediate/director_linkage.parquet` | Director-Spell level dataset (BoardEx linked). |
+| 3b | `data/intermediate/event_study_results.parquet` | CAR and BHAR metrics for CEO appointments. |
+| 4 | `data/analysis_hdfe.parquet` | Final assembled dataset for analysis (pre-connectivity filter). |
+| 5 | `data/director_alpha_final.parquet` | Final connected dataset ready for HDFE estimation. |
 
 ## Running Tests
 

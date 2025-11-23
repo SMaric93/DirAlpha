@@ -53,9 +53,11 @@ def prepare_spells(spells: pd.DataFrame) -> pd.DataFrame:
     spells = spells.copy()
 
     if "gvkey" in spells.columns:
+        # pyrefly: ignore [bad-argument-type]
         spells["gvkey"] = utils.normalize_gvkey(spells["gvkey"])
 
     if "ticker" in spells.columns:
+        # pyrefly: ignore [bad-argument-type]
         spells["ticker"] = utils.normalize_ticker(spells["ticker"])
 
     if "permco" in spells.columns:
@@ -144,6 +146,7 @@ def _clean_link_table(link: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     # Clean company_id
+    # pyrefly: ignore [bad-argument-type]
     link["company_id"] = utils.clean_id(link["company_id"])
     bad_company_ids = {"", "nan", "na", "NA", "None", "<NA>"}
 
@@ -201,10 +204,12 @@ def _collapse_link(link: pd.DataFrame, key: str) -> pd.DataFrame:
         DataFrame with columns [key, company_id] (and 'score' if used).
     """
     if key not in link.columns:
+        # pyrefly: ignore [bad-argument-type]
         return pd.DataFrame(columns=[key, "company_id"])
 
     df = link.dropna(subset=[key, "company_id"]).copy()
     if df.empty:
+        # pyrefly: ignore [bad-argument-type]
         return pd.DataFrame(columns=[key, "company_id"])
 
     if "score" in df.columns:
@@ -386,7 +391,9 @@ def build_board_roster(
     dirs = directors.copy()
 
     # Harmonize company_id
+    # pyrefly: ignore [bad-argument-type]
     spells["company_id"] = utils.clean_id(spells["company_id"])
+    # pyrefly: ignore [bad-argument-type]
     dirs["company_id"] = utils.clean_id(dirs["company_id"])
 
     # Ensure director_id
@@ -395,11 +402,15 @@ def build_board_roster(
             "Directors table missing 'director_id' in build_board_roster."
         )
         return pd.DataFrame()
+    # pyrefly: ignore [bad-argument-type]
     dirs["director_id"] = utils.clean_id(dirs["director_id"])
 
     # Ensure dates
+    # pyrefly: ignore [no-matching-overload]
     dirs["date_start"] = pd.to_datetime(dirs.get("date_start"), errors="coerce")
+    # pyrefly: ignore [no-matching-overload]
     dirs["date_end"] = pd.to_datetime(dirs.get("date_end"), errors="coerce")
+    # pyrefly: ignore [missing-attribute]
     dirs["date_end"] = dirs["date_end"].fillna(pd.Timestamp("today").normalize())
 
     before_dir_filter = len(dirs)
@@ -474,9 +485,13 @@ def flag_search_committee(
     coms = committees.copy()
 
     # Harmonize keys
+    # pyrefly: ignore [bad-argument-type]
     roster["company_id"] = utils.clean_id(roster["company_id"])
+    # pyrefly: ignore [bad-argument-type]
     roster["director_id"] = utils.clean_id(roster["director_id"])
+    # pyrefly: ignore [bad-argument-type]
     coms["company_id"] = utils.clean_id(coms.get("company_id"))
+    # pyrefly: ignore [bad-argument-type]
     coms["director_id"] = utils.clean_id(coms.get("director_id"))
 
     # Ensure dates
@@ -484,16 +499,19 @@ def flag_search_committee(
         roster["appointment_date"],
         errors="coerce",
     )
+    # pyrefly: ignore [no-matching-overload]
     coms["c_date_start"] = pd.to_datetime(
         coms.get("c_date_start"),
         errors="coerce",
     )
+    # pyrefly: ignore [no-matching-overload]
     coms["c_date_end"] = pd.to_datetime(
         coms.get("c_date_end"),
         errors="coerce",
     )
     # Treat missing start as very early and missing end as "still serving"
     coms["c_date_start"] = coms["c_date_start"].fillna(pd.Timestamp("1900-01-01"))
+    # pyrefly: ignore [missing-attribute]
     coms["c_date_end"] = coms["c_date_end"].fillna(pd.Timestamp("today").normalize())
 
     # Filter relevant committees
@@ -527,6 +545,7 @@ def flag_search_committee(
 
     merged = pd.merge(
         roster,
+        # pyrefly: ignore [bad-argument-type]
         rel_coms[["company_id", "director_id", "c_date_start", "c_date_end"]],
         on=["company_id", "director_id"],
         how="left",
@@ -564,11 +583,14 @@ def flag_search_committee(
     return roster
 
 
-def compute_director_characteristics(roster: pd.DataFrame) -> pd.DataFrame:
+def compute_director_characteristics(
+    roster: pd.DataFrame,
+    directors: pd.DataFrame,
+) -> pd.DataFrame:
     """
     Compute simple director characteristics relative to the CEO appointment:
         - tenure_years
-        - n_boards (dummy here: count of boards in this roster)
+        - n_boards (count of concurrent board seats)
     """
     if roster.empty:
         return roster
@@ -578,16 +600,81 @@ def compute_director_characteristics(roster: pd.DataFrame) -> pd.DataFrame:
         roster["appointment_date"],
         errors="coerce",
     )
+    # pyrefly: ignore [no-matching-overload]
     roster["date_start"] = pd.to_datetime(
         roster.get("date_start"),
         errors="coerce",
     )
 
+    # Tenure
     roster["tenure_days"] = (
         roster["appointment_date"] - roster["date_start"]
     ).dt.days
     roster["tenure_years"] = roster["tenure_days"].div(365.25).clip(lower=0)
-    roster["n_boards"] = 1  # placeholder; can be aggregated later at director level
+
+    # n_boards calculation
+    # Count how many active board seats each director held at the appointment date
+    
+    # 1. Get unique director-date pairs from roster to minimize work
+    unique_pairs = roster[["director_id", "appointment_date"]].drop_duplicates()
+    
+    if directors.empty:
+        roster["n_boards"] = 1
+        return roster
+
+    # 2. Filter directors table to relevant directors only
+    # (Optimization: avoid merging full 2M+ rows if we only need a subset)
+    # Ensure IDs are clean in the reference table
+    directors = directors.copy()
+    # pyrefly: ignore [bad-argument-type]
+    directors["director_id"] = utils.clean_id(directors["director_id"])
+    # pyrefly: ignore [bad-argument-type]
+    directors["company_id"] = utils.clean_id(directors["company_id"])
+
+    # pyrefly: ignore [missing-attribute]
+    relevant_ids = unique_pairs["director_id"].unique()
+    rel_dirs = directors[directors["director_id"].isin(relevant_ids)].copy()
+    
+    # Ensure dates in reference table
+    # pyrefly: ignore [no-matching-overload]
+    rel_dirs["date_start"] = pd.to_datetime(rel_dirs.get("date_start"), errors="coerce")
+    # pyrefly: ignore [no-matching-overload]
+    rel_dirs["date_end"] = pd.to_datetime(rel_dirs.get("date_end"), errors="coerce")
+    # pyrefly: ignore [missing-attribute]
+    rel_dirs["date_end"] = rel_dirs["date_end"].fillna(pd.Timestamp("today").normalize())
+    
+    # 3. Merge unique pairs with director history
+    # This gives all roles for each director at the time of interest
+    merged = pd.merge(
+        unique_pairs,
+        # pyrefly: ignore [bad-argument-type]
+        rel_dirs[["director_id", "company_id", "date_start", "date_end"]],
+        on="director_id",
+        how="inner"
+    )
+    
+    # 4. Filter for active roles
+    active_roles = merged[
+        (merged["appointment_date"] >= merged["date_start"]) &
+        (merged["appointment_date"] <= merged["date_end"])
+    ]
+    
+    # 5. Count unique companies per director-date
+    counts = (
+        active_roles.groupby(["director_id", "appointment_date"])["company_id"]
+        .nunique()
+        # pyrefly: ignore [no-matching-overload]
+        .reset_index(name="n_boards")
+    )
+    
+    # 6. Merge back to roster
+    roster = pd.merge(
+        roster,
+        counts,
+        on=["director_id", "appointment_date"],
+        how="left"
+    )
+    roster["n_boards"] = roster["n_boards"].fillna(1).astype(int) # Default to 1 if missing (at least the current one)
 
     return roster
 
@@ -661,7 +748,7 @@ def run_phase3() -> pd.DataFrame | None:
     roster = flag_search_committee(roster, committees)
 
     # 6. Compute characteristics
-    roster = compute_director_characteristics(roster)
+    roster = compute_director_characteristics(roster, directors)
 
     # 7. Save linkage
     roster = roster.rename(columns={"director_id": "directorid"})
@@ -682,11 +769,16 @@ def run_phase3() -> pd.DataFrame | None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     linkage.to_parquet(out_path)
 
+    # Also save as CSV
+    csv_path = config.DIRECTOR_LINKAGE_CSV_PATH
+    linkage.to_csv(csv_path, index=False)
+
     utils.logger.info(
         f"Phase 3 complete. Linked {len(linkage):,} director–spell observations "
-        f"to {out_path}."
+        f"to {out_path} and {csv_path}."
     )
 
+    # pyrefly: ignore [bad-return]
     return linkage
 
 
