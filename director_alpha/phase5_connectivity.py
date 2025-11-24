@@ -72,7 +72,11 @@ def run_phase5():
     
     # Save Final Dataset
     final_path = config.DATA_DIR / "director_alpha_final.parquet"
+    final_csv_path = config.DATA_DIR / "director_alpha_final.csv"
     final_df.to_parquet(final_path)
+    final_df.to_csv(final_csv_path, index=False)
+    
+    logger.info(f"Saved final dataset to {final_path} and {final_csv_path}")
     
     return final_df
 
