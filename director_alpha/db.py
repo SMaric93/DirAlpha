@@ -1,30 +1,9 @@
 import os
-import sys
-import logging
 import pandas as pd
-import numpy as np
-from pathlib import Path
-from typing import Optional, Callable, List, Union, Any
-from . import config
+from typing import List
+from . import config, log
 
-# ---------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------
-
-def setup_logging(name: str = "director_alpha", level: int = logging.INFO) -> logging.Logger:
-    """
-    Configure and return a logger.
-    """
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.setLevel(level)
-    return logger
-
-logger = setup_logging()
+logger = log.logger
 
 # ---------------------------------------------------------------------
 # Database Connection
@@ -54,77 +33,6 @@ def get_db():
     except Exception as e:
         logger.error(f"WRDS connection failed: {e}")
         raise RuntimeError(f"WRDS connection failed: {e}")
-
-# ---------------------------------------------------------------------
-# Data Loading
-# ---------------------------------------------------------------------
-
-def load_or_fetch(
-    file_path: Union[str, Path],
-    fetch_func: Optional[Callable[[Any], pd.DataFrame]] = None,
-    db_connection: Optional[Any] = None,
-    force_fetch: bool = False,
-    save_format: str = "parquet",
-    **kwargs
-) -> pd.DataFrame:
-    """
-    Load a DataFrame from a local file if it exists; otherwise, fetch it
-    using the provided function (and DB connection) and save it locally.
-
-    Args:
-        file_path: Path to the local cache file.
-        fetch_func: Function to call if file is missing. Must accept 'db' as first arg if db_connection is provided.
-        db_connection: WRDS connection object (or similar) to pass to fetch_func. 
-                       If None and fetch is needed, get_db() is called.
-        force_fetch: If True, ignore local file and fetch fresh.
-        save_format: 'parquet' or 'csv'.
-        **kwargs: Additional arguments passed to fetch_func.
-
-    Returns:
-        pd.DataFrame
-    """
-    path = Path(file_path)
-    
-    if not force_fetch and path.exists():
-        logger.info(f"Loading data from local cache: {path}")
-        try:
-            if save_format == "parquet":
-                return pd.read_parquet(path)
-            else:
-                return pd.read_csv(path)
-        except Exception as e:
-            logger.warning(f"Failed to read local file {path}: {e}. Will attempt fetch.")
-    
-    if fetch_func is None:
-        logger.error(f"File {path} not found and no fetch_func provided.")
-        return pd.DataFrame()
-
-    logger.info("Fetching fresh data...")
-    
-    # Manage DB connection
-    db = db_connection
-    if db is None:
-        db = get_db()
-    
-    # Execute fetch
-    try:
-        df = fetch_func(db, **kwargs)
-    except Exception as e:
-        logger.error(f"Data fetch failed: {e}")
-        return pd.DataFrame()
-    
-    # Save result
-    if not df.empty:
-        logger.info(f"Saving fetched data to {path}...")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if save_format == "parquet":
-            df.to_parquet(path)
-        else:
-            df.to_csv(path, index=False)
-    else:
-        logger.warning("Fetched data is empty. Nothing saved.")
-        
-    return df
 
 # ---------------------------------------------------------------------
 # WRDS Fetchers
@@ -199,29 +107,9 @@ def fetch_crsp_dsf(db, permno_list: List[int], start_date: str, end_date: str) -
     df['ret'] = pd.to_numeric(df['ret'], errors='coerce').fillna(0)
     df['dlret'] = pd.to_numeric(df['dlret'], errors='coerce').fillna(0)
     
-    # If both are 0, it's 0. If one is non-zero, it compounds.
-    # Note: If ret was missing (NaN) and we filled 0, and dlret is 0, we get 0. 
-    # But if ret was truly missing, maybe we should keep it missing?
-    # Standard event study: if missing, usually drop. 
-    # But here we filled 0. Let's refine:
-    # If ret is missing and dlret is missing, result is missing.
-    # If ret is present, dlret missing -> ret.
-    # If ret missing, dlret present -> dlret.
-    # If both -> compound.
-    
-    # Re-do with fillna only for calculation
-    # We need to preserve NaNs if both are NaN
-    
     # Vectorized calculation
     df['ret_adj'] = (1 + df['ret']) * (1 + df['dlret']) - 1
     
-    # If original ret was NaN and dlret was NaN/0, result should be NaN?
-    # Actually, raw_sql returns None for SQL NULL.
-    # Let's handle it properly in pandas
-    
-    # Reload to ensure we didn't overwrite with 0s yet
-    # Actually, let's just use the 0-filled version for now as it's robust for 'ret' column
-    # But we should assign back to 'ret'
     df['ret'] = df['ret_adj']
     df = df.drop(columns=['dlret', 'ret_adj'])
     
@@ -381,71 +269,3 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     
     logger.info(f"Built link table with {len(link)} rows.")
     return link
-
-# ---------------------------------------------------------------------
-# Data Cleaning & Normalization
-# ---------------------------------------------------------------------
-
-def clean_id(series: pd.Series) -> pd.Series:
-    """
-    Normalize ID columns (e.g. boardid, directorid) by ensuring string type
-    and removing trailing '.0' which often appears from float conversion.
-    """
-    return series.astype(str).str.replace(r"\.0$", "", regex=True)
-
-def normalize_gvkey(series: pd.Series) -> pd.Series:
-    """Ensure GVKEY is a 6-digit zero-padded string."""
-    return series.astype(str).str.zfill(6)
-
-def normalize_ticker(series: pd.Series) -> pd.Series:
-    """Ensure ticker is uppercase stripped string."""
-    return series.astype(str).str.upper().str.strip()
-
-# ---------------------------------------------------------------------
-# Financial Transformation
-# ---------------------------------------------------------------------
-
-def industry_adjust(df: pd.DataFrame, cols: List[str], group_cols: List[str] = ['fyear', 'sic2']) -> pd.DataFrame:
-    """
-    Subtract group-level median from specified columns.
-    """
-    df = df.copy()
-    # Ensure group columns exist
-    for c in group_cols:
-        if c not in df.columns:
-            if c == 'sic2' and 'sich' in df.columns:
-                 df['sic2'] = df['sich'].fillna(0).astype(int) // 100
-            else:
-                logger.warning(f"Grouping column {c} missing for industry adjustment.")
-                return df
-
-    for col in cols:
-        if col in df.columns:
-            median = df.groupby(group_cols)[col].transform('median')
-            df[f'{col}_adj'] = df[col] - median
-    return df
-
-def winsorize_series(x: pd.Series, limits: tuple = (0.01, 0.99)) -> pd.Series:
-    """
-    Clip series between quantiles.
-    """
-    lower = x.quantile(limits[0])
-    upper = x.quantile(limits[1])
-    return x.clip(lower=lower, upper=upper)
-
-def apply_winsorization(df: pd.DataFrame, cols: List[str], group_col: Optional[str] = 'fyear', limits: tuple = (0.01, 0.99)) -> pd.DataFrame:
-    """
-    Apply winsorization to specified columns, optionally grouped by year.
-    """
-    df = df.copy()
-    valid_cols = [c for c in cols if c in df.columns]
-    
-    if group_col and group_col in df.columns:
-        for col in valid_cols:
-            df[col] = df.groupby(group_col)[col].transform(lambda x: winsorize_series(x, limits=limits))
-    else:
-        for col in valid_cols:
-            # pyrefly: ignore [bad-argument-type]
-            df[col] = winsorize_series(df[col], limits=limits)
-            
-    return df

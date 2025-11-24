@@ -1,235 +1,176 @@
 import pandas as pd
 import numpy as np
-from . import config, utils
+from typing import Tuple, Optional
+from . import config, db, io, transform, log
 
+logger = log.logger
 
-def run_phase0():
+def load_data() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Phase 0: Universe Definition (Compustat–CRSP firm-year base)
-
-    Steps:
-    1. Load Compustat, CRSP, and CCM.
-    2. Link Compustat to CRSP via CCM with date-valid link.
-    3. Apply universe filters: US-incorporated, exclude financials & utilities.
-    4. Restrict to common stock (CRSP share codes 10/11) using an annual snapshot.
-    5. Output a firm-year base file.
+    Load raw Compustat, CRSP, and CCM data.
     """
-    utils.logger.info("Starting Phase 0: Universe Definition...")
-
-    # ------------------------------------------------------------------
-    # 1. Load Data
-    # ------------------------------------------------------------------
-    compustat = utils.load_or_fetch(
+    compustat = io.load_or_fetch(
         config.RAW_COMPUSTAT_PATH,
-        utils.fetch_compustat_funda,
-        start_year=2000
+        db.fetch_compustat_funda,
+        start_year=config.UNIVERSE_START_YEAR
     )
 
-    crsp = utils.load_or_fetch(
+    crsp = io.load_or_fetch(
         config.RAW_CRSP_PATH,
-        utils.fetch_crsp_msf,
-        start_date="2000-01-01"
+        db.fetch_crsp_msf,
+        start_date=config.UNIVERSE_START_DATE
     )
 
-    ccm = utils.load_or_fetch(
+    ccm = io.load_or_fetch(
         config.RAW_CCM_PATH,
-        utils.fetch_ccm_link
+        db.fetch_ccm_link
     )
+    
+    return compustat, crsp, ccm
 
-    if compustat.empty or crsp.empty or ccm.empty:
-        utils.logger.error("One or more input datasets are empty. Aborting Phase 0.")
-        return None
+def link_compustat_crsp(compustat: pd.DataFrame, ccm: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    Merge Compustat and CRSP using the CCM link table.
+    """
+    logger.info("Merging Compustat and CCM...")
 
-    # ------------------------------------------------------------------
-    # 2. CCM: Filter and link Compustat ↔ CRSP
-    # ------------------------------------------------------------------
-    utils.logger.info("Merging Compustat, CCM, and CRSP...")
-
-    # Keep standard link types / primaries
+    # Filter CCM
     if "linktype" in ccm.columns:
-        ccm = ccm[ccm["linktype"].isin(["LU", "LC"])]
-    else:
-        utils.logger.warning("CCM 'linktype' column missing; link filtering may be too broad.")
-
+        ccm = ccm[ccm["linktype"].isin(config.LINK_TYPES)]
+    
     if "linkprim" in ccm.columns:
-        ccm = ccm[ccm["linkprim"].isin(["P", "C"])]
-    else:
-        utils.logger.warning("CCM 'linkprim' column missing; link filtering may be too broad.")
+        ccm = ccm[ccm["linkprim"].isin(config.LINK_PRIM)]
 
-    # Normalize gvkey
+    # Normalize GVKEY
     if "gvkey" not in compustat.columns or "gvkey" not in ccm.columns:
-        utils.logger.error("Missing 'gvkey' in Compustat or CCM. Aborting Phase 0.")
+        logger.error("Missing 'gvkey' in Compustat or CCM.")
         return None
 
     compustat = compustat.copy()
     ccm = ccm.copy()
+    
+    compustat["gvkey"] = transform.normalize_gvkey(compustat["gvkey"])
+    ccm["gvkey"] = transform.normalize_gvkey(ccm["gvkey"])
 
-    compustat["gvkey"] = utils.normalize_gvkey(compustat["gvkey"])
-    ccm["gvkey"] = utils.normalize_gvkey(ccm["gvkey"])
-
-    # Inner join on gvkey
+    # Merge
     merged = pd.merge(compustat, ccm, on="gvkey", how="inner")
 
-    # Date handling for link validity
-    # datadate: Compustat accounting date
+    # Date Handling
     if "datadate" not in merged.columns:
-        utils.logger.error("Compustat dataframe missing 'datadate'. Aborting Phase 0.")
+        logger.error("Compustat dataframe missing 'datadate'.")
         return None
 
     merged["datadate"] = pd.to_datetime(merged["datadate"], errors="coerce")
     merged = merged[merged["datadate"].notna()]
 
-    # CCM link dates
-    for col in ["linkdt", "linkenddt"]:
-        if col not in merged.columns:
-            utils.logger.error(f"CCM dataframe missing '{col}'. Aborting Phase 0.")
-            return None
-
+    # CCM Dates
     merged["linkdt"] = pd.to_datetime(merged["linkdt"], errors="coerce")
-    merged["linkenddt"] = pd.to_datetime(merged["linkenddt"], errors="coerce")
-
-    # Treat open-ended links as far-future
-    merged["linkenddt"] = merged["linkenddt"].fillna(pd.Timestamp("2099-12-31"))
-
-    # Drop rows with missing linkdt (cannot check validity)
+    merged["linkenddt"] = pd.to_datetime(merged["linkenddt"], errors="coerce").fillna(pd.Timestamp("2099-12-31"))
+    
     merged = merged[merged["linkdt"].notna()]
 
-    # Keep only rows where datadate falls within the link window
+    # Valid Link Check
     link_valid_mask = (merged["datadate"] >= merged["linkdt"]) & (merged["datadate"] <= merged["linkenddt"])
     merged = merged[link_valid_mask]
 
     if merged.empty:
-        utils.logger.error("No valid Compustat–CCM link records after date filtering. Aborting Phase 0.")
+        logger.error("No valid Compustat–CCM link records found.")
         return None
 
-    # Rename lpermno → permno and normalize type
-    if "lpermno" not in merged.columns:
-        utils.logger.error("CCM dataframe missing 'lpermno'. Aborting Phase 0.")
-        return None
-
+    # Rename and Clean PERMNO
     merged = merged.rename(columns={"lpermno": "permno"})
     merged["permno"] = pd.to_numeric(merged["permno"], errors="coerce")
-    merged = merged[merged["permno"].notna()]
+    merged = merged.dropna(subset=["permno"])
     merged["permno"] = merged["permno"].astype(int)
 
-    # ------------------------------------------------------------------
-    # 3. Universe Filters: US-incorporated, Non-Financial, Non-Utility
-    # ------------------------------------------------------------------
-    utils.logger.info("Applying universe filters (US Inc, Non-Fin/Util)...")
+    return merged
 
-    # US incorporated (fic = 'USA'), if available
-    if "fic" in merged.columns:
-        before = len(merged)
-        merged = merged[merged["fic"] == "USA"]
-        utils.logger.info(f"FIC filter (USA): kept {len(merged)} of {before} rows.")
-    else:
-        utils.logger.warning("Column 'fic' not found; skipping US-incorporation filter.")
+def apply_universe_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply filters: US Incorporation, Non-Financial, Non-Utility.
+    """
+    logger.info("Applying universe filters...")
+    
+    # US Incorporated
+    if "fic" in df.columns:
+        before = len(df)
+        df = df[df["fic"] == "USA"]
+        logger.info(f"FIC filter (USA): kept {len(df)} of {before} rows.")
+    
+    # SIC Filters
+    sic_col = "sich" if "sich" in df.columns else ("sic" if "sic" in df.columns else None)
+    
+    if sic_col:
+        df = df.copy()
+        df[sic_col] = pd.to_numeric(df[sic_col], errors="coerce")
+        sic = df[sic_col]
+        
+        is_fin = (sic >= config.SIC_FIN_START) & (sic <= config.SIC_FIN_END)
+        is_util = (sic >= config.SIC_UTIL_START) & (sic <= config.SIC_UTIL_END)
+        
+        before = len(df)
+        df = df[~(is_fin | is_util)]
+        logger.info(f"Financial/Utility SIC filter: removed {before - len(df)} rows.")
+    
+    return df
 
-    # SIC / SICH filters for Financials and Utilities
-    sic_col = None
-    if "sich" in merged.columns:
-        sic_col = "sich"
-    elif "sic" in merged.columns:
-        sic_col = "sic"
-
-    if sic_col is not None:
-        merged[sic_col] = pd.to_numeric(merged[sic_col], errors="coerce")
-        sic = merged[sic_col]
-
-        condition_fin = (sic >= 6000) & (sic <= 6999)
-        condition_util = (sic >= 4900) & (sic <= 4949)
-
-        before = len(merged)
-        merged = merged[~(condition_fin | condition_util)]
-        utils.logger.info(
-            f"Financial/Utility SIC filter: removed {before - len(merged)} rows; "
-            f"remaining {len(merged)}."
-        )
-    else:
-        utils.logger.warning("No 'sich' or 'sic' column found; skipping Financial/Utility filter.")
-
-    # ------------------------------------------------------------------
-    # 4. Merge with CRSP and Require Common Stock (SHRCD 10/11)
-    # ------------------------------------------------------------------
-    utils.logger.info("Checking Share Codes (10, 11)...")
-
-    if "permno" not in crsp.columns:
-        utils.logger.error("CRSP data missing 'permno'. Aborting Phase 0.")
-        return None
-
+def filter_common_stock(merged_df: pd.DataFrame, crsp: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    Restrict to common stock (Share Codes 10, 11) using CRSP.
+    """
+    logger.info("Checking Share Codes...")
+    
     crsp = crsp.copy()
     crsp["permno"] = pd.to_numeric(crsp["permno"], errors="coerce")
-    crsp = crsp[crsp["permno"].notna()]
+    crsp = crsp.dropna(subset=["permno", "date", "shrcd"])
     crsp["permno"] = crsp["permno"].astype(int)
-
-    if "date" not in crsp.columns:
-        utils.logger.error("CRSP data missing 'date'. Aborting Phase 0.")
-        return None
-
-    crsp["date"] = pd.to_datetime(crsp["date"], errors="coerce")
-    crsp = crsp[crsp["date"].notna()]
+    crsp["date"] = pd.to_datetime(crsp["date"])
     crsp["year"] = crsp["date"].dt.year
+    
+    # Identify common stock
+    crsp["is_common"] = crsp["shrcd"].isin(config.SHARE_CODES)
+    
+    # Permno-Year is valid if it was common stock at any point in that year
+    valid_permno_years = crsp.groupby(["permno", "year"])["is_common"].any().reset_index()
+    valid_permno_years = valid_permno_years[valid_permno_years["is_common"]].drop(columns=["is_common"])
+    
+    # Merge
+    merged_df["year"] = merged_df["datadate"].dt.year
+    
+    final_df = pd.merge(merged_df, valid_permno_years, on=["permno", "year"], how="inner")
+    
+    return final_df
 
-    if "shrcd" not in crsp.columns:
-        utils.logger.error("CRSP data missing 'shrcd'. Aborting Phase 0.")
-        return None
+def run_phase0():
+    """
+    Phase 0: Universe Definition (Compustat–CRSP firm-year base)
+    """
+    logger.info("Starting Phase 0: Universe Definition...")
 
-    # Mark common stock months
-    crsp["is_common"] = crsp["shrcd"].isin([10, 11])
+    # 1. Load Data
+    compustat, crsp, ccm = load_data()
+    if compustat.empty or crsp.empty or ccm.empty:
+        logger.error("One or more input datasets are empty. Aborting Phase 0.")
+        return
 
-    # For each (permno, year), check if it was EVER common during the year
-    crsp_annual = (
-        crsp.groupby(["permno", "year"])["is_common"]
-        .any()
-        .reset_index()
-    )
+    # 2. Link
+    merged = link_compustat_crsp(compustat, ccm)
+    if merged is None:
+        return
 
-    # Keep only permno-years that are common stock at some point in the year
-    crsp_annual = crsp_annual[crsp_annual["is_common"]].drop(columns=["is_common"])
+    # 3. Filter Universe
+    merged = apply_universe_filters(merged)
 
-    # Create fiscal-year / calendar-year merge key for Compustat side
-    # Here we use calendar year of datadate; if you want fyear instead, change this.
-    merged["year"] = merged["datadate"].dt.year
+    # 4. Filter Common Stock
+    final_df = filter_common_stock(merged, crsp)
+    if final_df is None or final_df.empty:
+        logger.error("No records after merging with CRSP share-code universe.")
+        return
 
-    # Merge Compustat+CCM with CRSP annual share-code snapshot
-    final_df = pd.merge(
-        merged,
-        crsp_annual,
-        on=["permno", "year"],
-        how="inner"
-    )
-
-    if final_df.empty:
-        utils.logger.error("No records after merging with CRSP share-code universe. Aborting Phase 0.")
-        return None
-
-    # ------------------------------------------------------------------
-    # 5. Build firm-year base and export
-    # ------------------------------------------------------------------
-    # Choose core variables to keep (only keep if available)
-    columns_to_keep = [
-        "gvkey",
-        "permno",
-        "fyear",
-        "datadate",
-        "sich",
-        "sic",
-        "naics",
-        "at",
-        "oibdp",
-        "prcc_f",
-        "csho",
-        "ceq",
-        "dltt",
-        "dlc",
-        "xrd",
-        "capx",
-    ]
-
-    available_cols = [col for col in columns_to_keep if col in final_df.columns]
+    # 5. Select Columns and Deduplicate
+    available_cols = [c for c in config.COMPUSTAT_COLS_TO_KEEP if c in final_df.columns]
     firm_year_base = final_df[available_cols].copy()
 
-    # Optionally de-duplicate to one record per (gvkey, fyear) using last datadate
     if {"gvkey", "fyear", "datadate"}.issubset(firm_year_base.columns):
         firm_year_base = (
             firm_year_base
@@ -238,15 +179,9 @@ def run_phase0():
             .tail(1)
         )
 
-    utils.logger.info(
-        f"Phase 0 Complete. Generated {len(firm_year_base)} firm-year observations."
-    )
-
-    # Save to parquet
+    logger.info(f"Phase 0 Complete. Generated {len(firm_year_base)} firm-year observations.")
+    
     firm_year_base.to_parquet(config.FIRM_YEAR_BASE_PATH, index=False)
-
-    return firm_year_base
-
 
 if __name__ == "__main__":
     run_phase0()

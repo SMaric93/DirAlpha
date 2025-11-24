@@ -1,9 +1,11 @@
 import pandas as pd
 import numpy as np
 import re
-from . import config, utils
+from . import config, db, io, transform, log
 
-def identify_ceos_no_coceo(execucomp, firm_col="gvkey", year_col="year"):
+logger = log.logger
+
+def identify_ceos_no_coceo(execucomp: pd.DataFrame, firm_col: str = "gvkey", year_col: str = "year") -> pd.DataFrame:
     """
     Identify the primary CEO for each firm-year in ExecuComp-style data,
     dropping any firm-years with multiple CEOs (co-CEOs).
@@ -42,7 +44,7 @@ def identify_ceos_no_coceo(execucomp, firm_col="gvkey", year_col="year"):
 
     return ceos
 
-def identify_turnover(ceos):
+def identify_turnover(ceos: pd.DataFrame) -> pd.DataFrame:
     """
     Identify turnover events.
     """
@@ -58,7 +60,7 @@ def identify_turnover(ceos):
     ceos['is_turnover'] = turnover
     return ceos
 
-def determine_dates(ceos):
+def determine_dates(ceos: pd.DataFrame) -> pd.DataFrame:
     """
     Determine appointment dates.
     """
@@ -78,19 +80,6 @@ INTERIM_CEO_PATTERN = re.compile(
 def filter_interim(spells: pd.DataFrame) -> pd.DataFrame:
     """
     Exclude interim/acting CEOs (based on title) and short non-censored spells.
-
-    Logic:
-    - Drop rows whose title indicates an interim/acting CEO.
-    - Define spell_end as leftofc if available, otherwise the next appointment_date
-      within the same gvkey.
-    - Compute duration = spell_end - appointment_date (in days).
-    - Drop spells with observed duration < 365 days.
-    - Keep spells with censored duration (spell_end is NaT).
-
-    Assumes:
-      - 'gvkey' identifies firms.
-      - 'appointment_date' is the start of the CEO spell.
-      - 'leftofc' is the CEO's known departure date (if any).
     """
     spells = spells.copy()
 
@@ -131,7 +120,7 @@ def filter_interim(spells: pd.DataFrame) -> pd.DataFrame:
 
     return spells
 
-def classify_hires(spells):
+def classify_hires(spells: pd.DataFrame) -> pd.DataFrame:
     """
     Classify Internal vs External.
     """
@@ -142,21 +131,20 @@ def classify_hires(spells):
     return spells
 
 def run_phase2():
-    utils.logger.info("Starting Phase 2: CEO Tenures and Turnover...")
+    logger.info("Starting Phase 2: CEO Tenures and Turnover...")
     
-    execucomp = utils.load_or_fetch(
+    execucomp = io.load_or_fetch(
         config.RAW_EXECUCOMP_PATH,
-        utils.fetch_execucomp,
+        db.fetch_execucomp,
         start_year=2000
     )
 
     if execucomp.empty:
-        utils.logger.error("ExecuComp data missing. Aborting Phase 2.")
+        logger.error("ExecuComp data missing. Aborting Phase 2.")
         return
 
     # Normalize GVKEY
-    # pyrefly: ignore [bad-argument-type]
-    execucomp['gvkey'] = utils.normalize_gvkey(execucomp['gvkey'])
+    execucomp['gvkey'] = transform.normalize_gvkey(execucomp['gvkey'])
 
     # 1. Identify CEOs
     ceos = identify_ceos_no_coceo(execucomp)
@@ -185,7 +173,7 @@ def run_phase2():
     
     final_spells = spells[cols].copy()
     
-    utils.logger.info(f"Phase 2 Complete. Identified {len(final_spells)} CEO spells.")
+    logger.info(f"Phase 2 Complete. Identified {len(final_spells)} CEO spells.")
     
     final_spells.to_parquet(config.CEO_SPELLS_PATH)
     return final_spells

@@ -1,36 +1,25 @@
 import pandas as pd
 import numpy as np
-from . import config
+from . import config, log
 
-def calculate_tenure_performance(spells, firm_year):
+logger = log.logger
+
+def calculate_tenure_performance(spells: pd.DataFrame, firm_year: pd.DataFrame) -> pd.DataFrame:
     """
     Calculate average performance (ROA, Q) for T+1 to T+3.
     """
     # Spells has 'gvkey', 'appointment_date'.
-    # We need fiscal year of appointment.
+    spells = spells.copy()
+    firm_year = firm_year.copy()
+
     spells['appointment_date'] = pd.to_datetime(spells['appointment_date'])
-    spells['fyear_appt'] = spells['appointment_date'].dt.year # Approximation, should use fiscal year map if possible
-    
-    # We need to link spells to firm_year to get fiscal year more accurately?
-    # Or just use calendar year of appointment as base T.
-    # Prompt says: "Use the first three full fiscal years following the appointment (T+1 to T+3)."
-    
-    # Let's assume fyear_appt is the fiscal year containing the appointment.
-    # Then we want fyear_appt + 1, + 2, + 3.
-    
-    # Create a long format of target years
-    spells_perf = []
-    
-    # Optimize: Instead of iterating, merge?
-    # Create a list of (gvkey, fyear) needed.
-    
-    # We can do a range merge or just merge on gvkey and filter.
-    # Merging on gvkey is safe if universe isn't huge.
+    spells['fyear_appt'] = spells['appointment_date'].dt.year 
     
     # Ensure types match
-    spells['gvkey'] = spells['gvkey'].astype(str)
-    firm_year['gvkey'] = firm_year['gvkey'].astype(str)
+    spells['gvkey'] = spells['gvkey'].astype(str).str.zfill(6)
+    firm_year['gvkey'] = firm_year['gvkey'].astype(str).str.zfill(6)
     
+    # Merge spells with firm-year data
     merged = pd.merge(spells[['spell_id', 'gvkey', 'fyear_appt']], 
                       firm_year[['gvkey', 'fyear', 'roa_adj', 'tobins_q_adj']], 
                       on='gvkey', how='inner')
@@ -45,13 +34,21 @@ def calculate_tenure_performance(spells, firm_year):
     
     return perf_agg
 
-def get_controls(spells, firm_year):
+def get_controls(spells: pd.DataFrame, firm_year: pd.DataFrame) -> pd.DataFrame:
     """
     Get controls at T-1.
     """
-    # Similar logic, merge on T-1
+    spells = spells.copy()
+    firm_year = firm_year.copy()
+    
+    spells['appointment_date'] = pd.to_datetime(spells['appointment_date'])
+    spells['fyear_appt'] = spells['appointment_date'].dt.year 
     spells['target_year'] = spells['fyear_appt'] - 1
     
+    # Ensure types match
+    spells['gvkey'] = spells['gvkey'].astype(str).str.zfill(6)
+    firm_year['gvkey'] = firm_year['gvkey'].astype(str).str.zfill(6)
+
     merged = pd.merge(spells[['spell_id', 'gvkey', 'target_year']], 
                       firm_year, 
                       left_on=['gvkey', 'target_year'], 
@@ -65,16 +62,28 @@ def get_controls(spells, firm_year):
     return merged[cols]
 
 def run_phase4():
-    print("Starting Phase 4: Final Assembly...")
+    logger.info("Starting Phase 4: Final Assembly...")
     
     try:
+        if not config.CEO_SPELLS_PATH.exists():
+             logger.error(f"CEO Spells file missing: {config.CEO_SPELLS_PATH}")
+             return
+        
+        if not config.DIRECTOR_LINKAGE_PATH.exists():
+             logger.error(f"Director Linkage file missing: {config.DIRECTOR_LINKAGE_PATH}")
+             return
+
         spells = pd.read_parquet(config.CEO_SPELLS_PATH)
         linkage = pd.read_parquet(config.DIRECTOR_LINKAGE_PATH)
-        # Load Phase 1 output (Firm Performance)
-        # Note: We saved it as firm_year_performance.parquet in Phase 1
-        firm_year = pd.read_parquet(config.INTERMEDIATE_DIR / "firm_year_performance.parquet")
-    except FileNotFoundError as e:
-        print(f"Missing intermediate files: {e}")
+        
+        if not config.FIRM_YEAR_PERFORMANCE_PATH.exists():
+             logger.error(f"Firm Performance file missing: {config.FIRM_YEAR_PERFORMANCE_PATH}")
+             return
+
+        firm_year = pd.read_parquet(config.FIRM_YEAR_PERFORMANCE_PATH)
+
+    except Exception as e:
+        logger.error(f"Error loading intermediate files: {e}")
         return
 
     # 1. Calculate Tenure Performance
@@ -84,19 +93,21 @@ def run_phase4():
     controls = get_controls(spells, firm_year)
 
     # 3. Load Event Study Results (Phase 3b)
-    try:
-        event_study = pd.read_parquet(config.EVENT_STUDY_RESULTS_PATH)
-        # Keep only spell_id and return metrics
-        es_cols = [c for c in event_study.columns if c not in ['gvkey', 'appointment_date', 'permno']]
-        event_study = event_study[es_cols]
-    except FileNotFoundError:
-        print("Event study results not found (Phase 3b skipped?). Proceeding without returns.")
-        # pyrefly: ignore [bad-argument-type]
+    if config.EVENT_STUDY_RESULTS_PATH.exists():
+        try:
+            event_study = pd.read_parquet(config.EVENT_STUDY_RESULTS_PATH)
+            # Keep only spell_id and return metrics
+            es_cols = [c for c in event_study.columns if c not in ['gvkey', 'appointment_date', 'permno']]
+            event_study = event_study[es_cols]
+        except Exception as e:
+             logger.warning(f"Failed to load event study results: {e}")
+             event_study = pd.DataFrame(columns=['spell_id'])
+    else:
+        logger.warning("Event study results not found. Proceeding without returns.")
         event_study = pd.DataFrame(columns=['spell_id'])
     
     # 4. Merge everything onto Linkage
-    # Linkage is Director-Spell level.
-    # Merge Spell info (Performance, Controls, CEO Characteristics, Returns) onto Linkage.
+    logger.info("Merging datasets...")
     
     # First merge spell attributes to spells
     spells_full = pd.merge(spells, perf, on='spell_id', how='left')
@@ -104,19 +115,21 @@ def run_phase4():
     spells_full = pd.merge(spells_full, event_study, on='spell_id', how='left')
     
     # Now merge to Linkage
+    # Linkage: spell_id, directorid, company_id...
+    # Ensure keys match
+    spells_full['gvkey'] = spells_full['gvkey'].astype(str).str.zfill(6)
+    linkage['gvkey'] = linkage['gvkey'].astype(str).str.zfill(6)
+    
     analysis = pd.merge(linkage, spells_full, on=['spell_id', 'gvkey', 'appointment_date'], how='inner')
     
     # Add Cohort Year
     analysis['cohort_year'] = pd.to_datetime(analysis['appointment_date']).dt.year
     
     analysis.to_parquet(config.ANALYSIS_HDFE_PATH)
+    analysis.to_csv(config.ANALYSIS_HDFE_CSV_PATH, index=False)
     
-    # Also save as CSV
-    csv_path = config.ANALYSIS_HDFE_CSV_PATH
-    analysis.to_csv(csv_path, index=False)
-    
-    print(f"Phase 4 Complete. Assembled {len(analysis)} observations for analysis.")
-    print(f"Saved to {config.ANALYSIS_HDFE_PATH} and {csv_path}")
+    logger.info(f"Phase 4 Complete. Assembled {len(analysis)} observations for analysis.")
+    logger.info(f"Saved to {config.ANALYSIS_HDFE_PATH}")
     
     return analysis
 
