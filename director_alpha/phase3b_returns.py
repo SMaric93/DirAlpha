@@ -323,7 +323,18 @@ def process_event(row: pd.Series, dsf_grouped: pd.core.groupby.DataFrameGroupBy,
                 er = calculate_expected_returns(chunk, params)
                 gross_er = (1 + er).prod()
                 
-                results[f'{name}_{model_type}'] = gross_ret - gross_er
+                bhar = gross_ret - gross_er
+                results[f'{name}_{model_type}'] = bhar
+                
+                # Log-transformed BHAR: log(1 + BHAR)
+                # This transformation helps normalize the distribution of long-horizon returns
+                # Handle edge case where 1 + BHAR <= 0 (would cause log error)
+                if 1 + bhar > 0:
+                    results[f'{name}_{model_type}_log'] = np.log(1 + bhar)
+                else:
+                    # For extreme negative returns (BHAR < -100%), store NaN
+                    results[f'{name}_{model_type}_log'] = np.nan
+                    
             except ValueError:
                 continue
 
@@ -525,7 +536,7 @@ def run_event_study():
     results_df = transform.apply_winsorization(
         results_df, 
         cols=win_cols, 
-        limits=(0.005, 0.995),
+        limits=(0.01, 0.99),
         group_col=None
     )
     
