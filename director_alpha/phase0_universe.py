@@ -87,7 +87,7 @@ def link_compustat_crsp(compustat: pd.DataFrame, ccm: pd.DataFrame) -> Optional[
 
 def apply_universe_filters(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply filters: US Incorporation, Non-Financial, Non-Utility.
+    Apply filters: US Incorporation, Non-Financial, Non-Utility, Non-operating (SIC >= 9000).
     """
     logger.info("Applying universe filters...")
     
@@ -103,14 +103,15 @@ def apply_universe_filters(df: pd.DataFrame) -> pd.DataFrame:
     if sic_col:
         df = df.copy()
         df[sic_col] = pd.to_numeric(df[sic_col], errors="coerce")
-        sic = df[sic_col]
+        sic = df[sic_col].fillna(0).astype(int)
         
         is_fin = (sic >= config.SIC_FIN_START) & (sic <= config.SIC_FIN_END)
         is_util = (sic >= config.SIC_UTIL_START) & (sic <= config.SIC_UTIL_END)
+        is_other = (sic >= config.SIC_OTHER_START)  # SIC >= 9000 (non-operating)
         
         before = len(df)
-        df = df[~(is_fin | is_util)]
-        logger.info(f"Financial/Utility SIC filter: removed {before - len(df)} rows.")
+        df = df[~(is_fin | is_util | is_other)]
+        logger.info(f"SIC filter: removed {before - len(df)} rows (Financial/Utility/Non-operating).")
     
     return df
 

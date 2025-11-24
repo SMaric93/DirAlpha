@@ -1,26 +1,24 @@
 import wrds
-from . import config, utils
+from . import config, db
 
 def search_link_tables():
     print("Connecting to WRDS...")
     try:
-        db = utils.get_db()
+        db_conn = db.get_db()
     except Exception as e:
         print(f"Failed to connect: {e}")
         return
 
-    if db:
-        libraries = ["boardex", "wrds_apps", "wrds_lib"]
-        for lib in libraries:
-            print(f"\nSearching in '{lib}'...")
+    if db_conn:
+        tables = ["boardex.na_board_dir_announcements", "boardex.na_wrds_org_composition"]
+        for table in tables:
+            print(f"\nInspecting columns of '{table}'...")
             try:
-                tables = db.list_tables(library=lib)
-                # pyrefly: ignore [not-iterable]
-                for table in tables:
-                    if "link" in table or "gvkey" in table or "mapping" in table:
-                        print(f"FOUND: {lib}.{table}")
+                lib, tab = table.split(".")
+                desc = db_conn.describe_table(library=lib, table=tab)
+                print(desc)
             except Exception as e:
-                print(f"Error listing {lib}: {e}")
+                print(f"Error describing {table}: {e}")
     else:
         print("Failed to connect to WRDS.")
 

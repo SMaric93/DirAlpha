@@ -33,6 +33,7 @@ WRDS_CCM_LINKTABLE = "crsp.ccmxpf_linktable"
 WRDS_EXECUCOMP_ANNCOMP = "execcomp.anncomp"
 WRDS_BOARDEX_DIRECTORS = "boardex.na_wrds_org_composition"
 WRDS_BOARDEX_COMMITTEES = "boardex.na_board_dir_committees"
+WRDS_BOARDEX_CCM_LINK = "wrdsapps.bdxcrspcomplink"
 WRDS_BOARDEX_PROFILE = "boardex.na_wrds_company_profile"
 WRDS_FF_FACTORS_DAILY = "ff.factors_daily"
 WRDS_FF5_FACTORS_DAILY = "ff.fivefactors_daily"
@@ -78,6 +79,7 @@ SIC_FIN_START = 6000
 SIC_FIN_END = 6999
 SIC_UTIL_START = 4900
 SIC_UTIL_END = 4949
+SIC_OTHER_START = 9000  # Non-operating establishments
 
 # CCM Link Parameters
 LINK_TYPES = ["LU", "LC"]
