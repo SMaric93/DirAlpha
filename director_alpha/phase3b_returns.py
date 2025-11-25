@@ -239,7 +239,7 @@ def process_event(row: pd.Series, dsf_grouped: pd.core.groupby.DataFrameGroupBy,
     Main orchestrator for a single event. Handles data alignment, estimation, and calculation.
     """
     permno = row.permno
-    appt_date = row.appointment_date
+    appt_date = row.event_date
     results = {}
 
     # A. Get PERMNO specific returns
@@ -369,8 +369,8 @@ def link_spells_to_permno(spells: pd.DataFrame) -> pd.DataFrame:
     # Merge and perform the inequality join (date between link start and end)
     merged = pd.merge(spells, ccm, on='gvkey', how='inner')
     merged = merged[
-        (merged['appointment_date'] >= merged['linkdt']) & 
-        (merged['appointment_date'] <= merged['linkenddt'])
+        (merged['event_date'] >= merged['linkdt']) & 
+        (merged['event_date'] <= merged['linkenddt'])
     ]
     
     # Deduplicate: Prioritize the primary link ('P') if multiple links exist at the same time
@@ -380,7 +380,7 @@ def link_spells_to_permno(spells: pd.DataFrame) -> pd.DataFrame:
         merged = merged.sort_values('link_priority', ascending=False)
         merged = merged.drop_duplicates(subset=['spell_id'])
         
-    spells_linked = merged[['spell_id', 'appointment_date', 'permno', 'gvkey']].copy()
+    spells_linked = merged[['spell_id', 'event_date', 'permno', 'gvkey']].copy()
     
     # Ensure PERMNO is integer type and handle potential NaNs
     spells_linked['permno'] = pd.to_numeric(spells_linked['permno'], errors='coerce')
@@ -401,8 +401,8 @@ def load_market_data(spells_linked: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Data
     buffer_back = int(MAX_LOOKBACK * 1.5) + 30
     buffer_fwd = int(MAX_LOOKAHEAD * 1.5) + 30
     
-    start_date = spells_linked['appointment_date'].min() - timedelta(days=buffer_back)
-    end_date = spells_linked['appointment_date'].max() + timedelta(days=buffer_fwd)
+    start_date = spells_linked['event_date'].min() - timedelta(days=buffer_back)
+    end_date = spells_linked['event_date'].max() + timedelta(days=buffer_fwd)
     
     permnos = spells_linked['permno'].unique().tolist()
     db_conn = db.get_db()
@@ -474,13 +474,34 @@ def run_event_study():
     logger.info("Starting Event Study Analysis (Revised with FF5)...")
     
     # 1. Load Spells
-    if not config.CEO_SPELLS_PATH.exists():
-        logger.error(f"CEO spells file not found at {config.CEO_SPELLS_PATH}.")
+    # 1. Load Spells
+    # Prefer enriched BoardEx spells if available
+    spells_path = config.CEO_SPELLS_BOARDEX_PATH if config.CEO_SPELLS_BOARDEX_PATH.exists() else config.CEO_SPELLS_PATH
+    
+    if not spells_path.exists():
+        logger.error(f"CEO spells file not found at {spells_path}.")
         spells = pd.DataFrame()
     else:
         try:
-            spells = pd.read_parquet(config.CEO_SPELLS_PATH)
-            spells['appointment_date'] = pd.to_datetime(spells['appointment_date'])
+            logger.info(f"Loading CEO spells from {spells_path}...")
+            spells = pd.read_parquet(spells_path)
+            
+            # Use announcement_date if available, else drop
+            if "announcement_date" in spells.columns:
+                # Strict enforcement: Drop rows where announcement_date is missing
+                before_drop = len(spells)
+                spells = spells.dropna(subset=["announcement_date"]).copy()
+                after_drop = len(spells)
+                dropped = before_drop - after_drop
+                
+                spells["event_date"] = spells["announcement_date"]
+                logger.info(f"Using strict 'announcement_date'. Dropped {dropped} spells without BoardEx dates. Remaining: {after_drop}.")
+            else:
+                logger.error("'announcement_date' column not found in spells. Cannot proceed with strict BoardEx enforcement.")
+                return
+                
+            spells['event_date'] = pd.to_datetime(spells['event_date'])
+            
         except Exception as e:
             logger.error(f"Failed to load CEO spells: {e}")
             return

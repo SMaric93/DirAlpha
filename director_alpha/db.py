@@ -200,9 +200,11 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     query = f"""
         SELECT 
             companyid, 
-            gvkey, 
-            permco, 
-            score, 
+            a.execid,
+            a.exec_lname,
+            a.exec_fname,
+            a.pceo,
+            a.ceoann, 
             duplicate, 
             preferred
         FROM {DEDICATED_LINK_TABLE}
@@ -295,7 +297,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
 def fetch_execucomp(db, start_year: int = config.UNIVERSE_START_YEAR) -> pd.DataFrame:
     """Fetch ExecuComp Annual Compensation."""
     query = f"""
-        SELECT gvkey, year, execid, pceo, ceoann, title, tdc1, becameceo, leftofc, joined_co, age, gender, ticker
+        SELECT gvkey, year, execid, exec_lname, exec_fname, pceo, ceoann, title, tdc1, becameceo, leftofc, joined_co, age, gender, ticker
         FROM {config.WRDS_EXECUCOMP_ANNCOMP}
         WHERE year >= {start_year}
     """
@@ -333,6 +335,38 @@ def fetch_boardex_committees(db) -> pd.DataFrame:
             datestartrole AS c_date_start,
             dateendrole   AS c_date_end
         FROM {config.WRDS_BOARDEX_COMMITTEES}
+    """
+    df = db.raw_sql(query)
+    df["company_id"] = df["company_id"].astype(str)
+    df["director_id"] = df["director_id"].astype(str)
+    return df
+
+def fetch_exec_boardex_link(db) -> pd.DataFrame:
+    """Fetch Execucomp-BoardEx Link Table."""
+    query = f"""
+        SELECT 
+            execid, 
+            directorid AS director_id, 
+            exec_fullname,
+            directorname AS director_name,
+            score, 
+            matchstyle
+        FROM {config.WRDS_EXEC_BOARDEX_LINK}
+    """
+    df = db.raw_sql(query)
+    df["director_id"] = df["director_id"].astype(str)
+    return df
+
+def fetch_boardex_announcements(db) -> pd.DataFrame:
+    """Fetch BoardEx Director Announcements."""
+    query = f"""
+        SELECT
+            companyid        AS company_id,
+            directorid       AS director_id,
+            announcementdate AS announcement_date,
+            rolename         AS role_name
+        FROM {config.WRDS_BOARDEX_ANNOUNCEMENTS}
+        WHERE rolename LIKE '%%CEO%%' OR rolename LIKE '%%Chief Executive%%'
     """
     df = db.raw_sql(query)
     df["company_id"] = df["company_id"].astype(str)

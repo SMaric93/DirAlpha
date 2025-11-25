@@ -660,7 +660,142 @@ def run_phase3() -> pd.DataFrame | None:
         f"to {out_path} and {csv_path}."
     )
 
+    # ---------------------------------------------------------------------
+    # Part B: Enrich Spells with Announcement Dates (for Event Study)
+    # ---------------------------------------------------------------------
+    enrich_spells_with_announcements(spells, spells_linked)
+
     return linkage
+
+def enrich_spells_with_announcements(spells: pd.DataFrame, spells_linked: pd.DataFrame):
+    """
+    Link CEO spells to BoardEx Director IDs and fetch announcement dates.
+    Saves to config.CEO_SPELLS_BOARDEX_PATH.
+    """
+    logger.info("Starting enrichment of CEO spells with BoardEx announcement dates...")
+
+    # 1. Fetch Link Table (Execucomp -> BoardEx)
+    exec_bdx_link = io.load_or_fetch(
+        config.RAW_EXEC_BOARDEX_LINK_PATH,
+        db.fetch_exec_boardex_link,
+    )
+    
+    if exec_bdx_link.empty:
+        logger.error("Execucomp-BoardEx link table is empty. Cannot enrich spells.")
+        return
+
+    # 2. Fetch Announcements
+    announcements = io.load_or_fetch(
+        config.RAW_BOARDEX_ANNOUNCEMENTS_PATH,
+        db.fetch_boardex_announcements,
+    )
+    
+    if announcements.empty:
+        logger.error("BoardEx announcements table is empty. Cannot enrich spells.")
+        return
+
+    # 3. Link Spells to Director ID
+    # spells has 'execid', exec_bdx_link maps 'execid' -> 'director_id'
+    
+    # Ensure types
+    spells["execid"] = pd.to_numeric(spells["execid"], errors="coerce")
+    exec_bdx_link["execid"] = pd.to_numeric(exec_bdx_link["execid"], errors="coerce")
+    exec_bdx_link["director_id"] = transform.clean_id(exec_bdx_link["director_id"])
+    
+    # Filter for high quality matches if possible (score is often available)
+    # For now, we take the best match (highest score) if duplicates exist
+    if "score" in exec_bdx_link.columns:
+        # Lower score is better (1=High Confidence, 12=Low)
+        exec_bdx_link = exec_bdx_link.sort_values("score", ascending=True).drop_duplicates("execid")
+    else:
+        exec_bdx_link = exec_bdx_link.drop_duplicates("execid")
+
+    spells_w_dir = pd.merge(
+        spells,
+        exec_bdx_link[["execid", "director_id"]],
+        on="execid",
+        how="left",
+        validate="m:1"
+    )
+    
+    linked_count = spells_w_dir["director_id"].notna().sum()
+    logger.info(f"Linked {linked_count:,} / {len(spells):,} spells to BoardEx Director IDs.")
+
+    # 4. Merge with Announcements
+    # We need to match on director_id AND company_id to ensure it's the right role
+    # However, spells_linked has the BoardEx company_id.
+    
+    # Join spells_w_dir with spells_linked to get company_id
+    # spells_linked has ['spell_id', 'company_id'] (and others)
+    
+    spells_full = pd.merge(
+        spells_w_dir,
+        spells_linked[["spell_id", "company_id"]],
+        on="spell_id",
+        how="left"
+    )
+    
+    # Prepare announcements
+    announcements["director_id"] = transform.clean_id(announcements["director_id"])
+    announcements["company_id"] = transform.clean_id(announcements["company_id"])
+    announcements["announcement_date"] = pd.to_datetime(announcements["announcement_date"], errors="coerce")
+    
+    # Merge
+    merged = pd.merge(
+        spells_full,
+        announcements,
+        on=["director_id", "company_id"],
+        how="left"
+    )
+    
+    # 5. Select Best Announcement Date
+    # Logic: 
+    # - announcement_date should be close to appointment_date (becameceo)
+    # - ideally before or slightly after
+    # - If multiple, pick the one closest to appointment_date
+    
+    merged["appointment_date"] = pd.to_datetime(merged["appointment_date"])
+    merged["diff_days"] = (merged["appointment_date"] - merged["announcement_date"]).dt.days
+    
+    # Filter: Announcement shouldn't be too far off (e.g., +/- 2 years) to avoid matching wrong roles
+    # CEO roles are filtered in SQL, but double check
+    mask_valid = merged["diff_days"].abs() < 730 # 2 years
+    
+    valid_announcements = merged[mask_valid].copy()
+    
+    # Sort by absolute difference to find closest
+    valid_announcements["abs_diff"] = valid_announcements["diff_days"].abs()
+    valid_announcements = valid_announcements.sort_values(["spell_id", "abs_diff"])
+    
+    best_dates = valid_announcements.drop_duplicates("spell_id", keep="first")
+    
+    # 6. Finalize
+    # Merge back to original spells to keep all rows
+    # We also want director_id from the linkage step
+    spells_with_did = spells_w_dir[['spell_id', 'director_id']]
+    
+    final_spells = pd.merge(
+        spells,
+        spells_with_did,
+        on='spell_id',
+        how='left'
+    )
+
+    final_spells = pd.merge(
+        final_spells,
+        best_dates[["spell_id", "announcement_date"]],
+        on="spell_id",
+        how="left"
+    )
+    
+    # Stats
+    found_ann = final_spells["announcement_date"].notna().sum()
+    logger.info(f"Found BoardEx announcement dates for {found_ann:,} / {len(final_spells):,} spells.")
+    
+    # Save
+    out_path = config.CEO_SPELLS_BOARDEX_PATH
+    final_spells.to_parquet(out_path)
+    logger.info(f"Saved enriched spells to {out_path}")
 
 
 if __name__ == "__main__":

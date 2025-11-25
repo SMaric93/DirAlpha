@@ -10,15 +10,13 @@ def search_link_tables():
         return
 
     if db_conn:
-        tables = ["boardex.na_board_dir_announcements", "boardex.na_wrds_org_composition"]
-        for table in tables:
-            print(f"\nInspecting columns of '{table}'...")
-            try:
-                lib, tab = table.split(".")
-                desc = db_conn.describe_table(library=lib, table=tab)
-                print(desc)
-            except Exception as e:
-                print(f"Error describing {table}: {e}")
+        table_name = "wrdsapps.exec_boardex_link"
+        print(f"\nInspecting columns of '{table_name}'...")
+        try:
+            desc = db_conn.describe_table(library="wrdsapps", table="exec_boardex_link")
+            print(desc)
+        except Exception as e:
+            print(f"Error describing {table_name}: {e}")
     else:
         print("Failed to connect to WRDS.")
 

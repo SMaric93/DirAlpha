@@ -65,15 +65,15 @@ def run_phase4():
     logger.info("Starting Phase 4: Final Assembly...")
     
     try:
-        if not config.CEO_SPELLS_PATH.exists():
-             logger.error(f"CEO Spells file missing: {config.CEO_SPELLS_PATH}")
+        if not config.CEO_SPELLS_BOARDEX_PATH.exists():
+             logger.error(f"CEO Spells file missing: {config.CEO_SPELLS_BOARDEX_PATH}")
              return
         
         if not config.DIRECTOR_LINKAGE_PATH.exists():
              logger.error(f"Director Linkage file missing: {config.DIRECTOR_LINKAGE_PATH}")
              return
 
-        spells = pd.read_parquet(config.CEO_SPELLS_PATH)
+        spells = pd.read_parquet(config.CEO_SPELLS_BOARDEX_PATH)
         linkage = pd.read_parquet(config.DIRECTOR_LINKAGE_PATH)
         
         if not config.FIRM_YEAR_PERFORMANCE_PATH.exists():
