@@ -15,9 +15,9 @@ from director_alpha import phase3_directors
 
 @pytest.fixture
 def mock_wrds_connection():
-    with patch("director_alpha.config.get_wrds_connection") as mock_get_conn:
+    with patch("director_alpha.db.get_db") as mock_get_db:
         mock_db = MagicMock()
-        mock_get_conn.return_value = mock_db
+        mock_get_db.return_value = mock_db
         yield mock_db
 
 @pytest.fixture

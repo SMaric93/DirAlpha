@@ -39,6 +39,11 @@ WRDS_BOARDEX_PROFILE = "boardex.na_wrds_company_profile"
 WRDS_BOARDEX_ANNOUNCEMENTS = "boardex.na_board_dir_announcements"
 WRDS_FF_FACTORS_DAILY = "ff.factors_daily"
 WRDS_FF5_FACTORS_DAILY = "ff.fivefactors_daily"
+WRDS_TREASURY_YIELDS = "frb.rates_daily"
+WRDS_CIQ_PROFESSIONAL = "ciq.wrds_professional"
+WRDS_CIQ_CAREER = "ciq.wrds_professional_job"
+WRDS_PEOPLE_LINK = "wrdsapps.wrds_people_link"
+WRDS_SDC_MA = "sdc.ma"
 
 # ---------------------------------------------------------------------
 # File Paths
@@ -46,21 +51,31 @@ WRDS_FF5_FACTORS_DAILY = "ff.fivefactors_daily"
 # Raw Data
 RAW_COMPUSTAT_PATH = DATA_DIR / "compustat.parquet"
 RAW_CRSP_PATH = DATA_DIR / "crsp.parquet"
+RAW_CRSP_DSF_PATH = DATA_DIR / "crsp_dsf.parquet"
+RAW_FF5_FACTORS_DAILY_PATH = DATA_DIR / "ff5_factors_daily.parquet"
 RAW_CCM_PATH = DATA_DIR / "ccm.parquet"
 RAW_EXECUCOMP_PATH = DATA_DIR / "execucomp.parquet"
+RAW_TREASURY_YIELDS_PATH = DATA_DIR / "treasury_yields.parquet"
 RAW_BOARDEX_DIRECTORS_PATH = DATA_DIR / "boardex_directors.parquet"
 RAW_BOARDEX_COMMITTEES_PATH = DATA_DIR / "boardex_committees.parquet"
 RAW_BOARDEX_LINK_PATH = DATA_DIR / "boardex_link.parquet"
 RAW_EXEC_BOARDEX_LINK_PATH = DATA_DIR / "exec_boardex_link.parquet"
 RAW_BOARDEX_ANNOUNCEMENTS_PATH = DATA_DIR / "boardex_announcements.parquet"
-RAW_CRSP_DSF_PATH = DATA_DIR / "crsp_dsf.parquet"
-RAW_FF_FACTORS_PATH = DATA_DIR / "ff_factors.parquet"
-RAW_FF5_FACTORS_DAILY_PATH = DATA_DIR / "ff5_factors_daily.parquet"
+RAW_CIQ_PROFESSIONAL_PATH = DATA_DIR / "ciq_professional.parquet"
+RAW_CIQ_CAREER_PATH = DATA_DIR / "ciq_career.parquet"
+RAW_WRDS_PEOPLE_LINK_PATH = DATA_DIR / "wrds_people_link.parquet"
+RAW_SDC_MA_PATH = DATA_DIR / "sdc_ma.parquet"
+SDC_MAPPING_CSV_PATH = DATA_DIR / "dealnum_to_gvkey.csv"
+MA_DEALS_PATH = INTERMEDIATE_DIR / "ma_deals.parquet"
 
 # Intermediate Data
 FIRM_YEAR_BASE_PATH = INTERMEDIATE_DIR / "firm_year_base.parquet"
 FIRM_YEAR_PERFORMANCE_PATH = INTERMEDIATE_DIR / "firm_year_performance.parquet"
+FIRM_YEAR_MA_PATH = INTERMEDIATE_DIR / "firm_year_ma.parquet"
+FIRM_YEAR_COMPENSATION_PATH = INTERMEDIATE_DIR / "firm_year_compensation.parquet"
 CEO_SPELLS_PATH = INTERMEDIATE_DIR / "ceo_spells.parquet"
+CEO_EMPLOYMENT_HISTORY_PATH = DATA_DIR / "ceo_employment_history.csv"
+DIRECTOR_EMPLOYMENT_HISTORY_PATH = DATA_DIR / "director_employment_history.csv"
 CEO_SPELLS_BOARDEX_PATH = INTERMEDIATE_DIR / "ceo_spells_boardex.parquet"
 DIRECTOR_LINKAGE_PATH = INTERMEDIATE_DIR / "director_linkage.parquet"
 DIRECTOR_LINKAGE_CSV_PATH = INTERMEDIATE_DIR / "director_linkage.csv"
@@ -96,7 +111,7 @@ SHARE_CODES = [10, 11]
 # Compustat Variables to Keep
 COMPUSTAT_COLS_TO_KEEP = [
     "gvkey", "permno", "fyear", "datadate", "sich", "sic", "naics",
-    "at", "oibdp", "prcc_f", "csho", "ceq", "dltt", "dlc", "xrd", "capx"
+    "at", "oibdp", "prcc_f", "csho", "ceq", "dltt", "dlc", "xrd", "capx", "dv"
 ]
 
 # Phase 1: Performance

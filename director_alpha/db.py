@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from typing import List
-from . import config, log
+from . import config, log, transform
 
 logger = log.logger
 
@@ -51,7 +51,7 @@ def fetch_compustat_funda(db, start_year: int = config.UNIVERSE_START_YEAR) -> p
     query = f"""
         SELECT 
             gvkey, datadate, fyear, fic, 
-            at, oibdp, prcc_f, csho, ceq, dltt, dlc, xrd, capx, 
+            at, oibdp, prcc_f, csho, ceq, dltt, dlc, xrd, capx, dv, 
             sich, naicsh as naics
         FROM {config.WRDS_COMP_FUNDA}
         WHERE indfmt='INDL' AND datafmt='STD' AND popsrc='D' AND consol='C'
@@ -161,6 +161,23 @@ def fetch_fama_french_5_daily(db, start_date: str) -> pd.DataFrame:
     return db.raw_sql(query)
 
 # ---------------------------------------------------------------------
+# Treasury Yields
+# ---------------------------------------------------------------------
+
+def fetch_treasury_yields(db, start_date: str = config.UNIVERSE_START_DATE) -> pd.DataFrame:
+    """
+    Fetch Treasury Yields (10-year constant maturity).
+    Used for Black-Scholes risk-free rate.
+    """
+    # 'dgs10' is the standard ticker for 10-year constant maturity rate in frb.rates_daily
+    query = f"""
+        SELECT date, dgs10 as i10
+        FROM {config.WRDS_TREASURY_YIELDS}
+        WHERE date >= '{start_date}' AND dgs10 IS NOT NULL
+    """
+    return db.raw_sql(query)
+
+# ---------------------------------------------------------------------
 # Linking Tables
 # ---------------------------------------------------------------------
 
@@ -217,7 +234,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
              df['company_id'] = df['company_id'].astype(str)
         
         if 'gvkey' in df.columns:
-             df['gvkey'] = df['gvkey'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(6)
+             df['gvkey'] = transform.normalize_gvkey(df['gvkey'])
 
         logger.info(f"Fetched dedicated link table with {len(df)} rows.")
         return df
@@ -281,7 +298,7 @@ def fetch_boardex_link(db) -> pd.DataFrame:
     
     link = m2.rename(columns={"boardid": "company_id"})
     if "gvkey" in link.columns:
-        link["gvkey"] = link["gvkey"].fillna("").astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(6)
+        link["gvkey"] = transform.normalize_gvkey(link["gvkey"])
         
     # Select relevant columns
     cols = ["company_id", "gvkey", "permno", "ticker", "isin"]
@@ -297,7 +314,12 @@ def fetch_boardex_link(db) -> pd.DataFrame:
 def fetch_execucomp(db, start_year: int = config.UNIVERSE_START_YEAR) -> pd.DataFrame:
     """Fetch ExecuComp Annual Compensation."""
     query = f"""
-        SELECT gvkey, year, execid, exec_lname, exec_fname, pceo, ceoann, title, tdc1, becameceo, leftofc, joined_co, age, gender, ticker
+        SELECT 
+            gvkey, year, execid, exec_lname, exec_fname, pceo, ceoann, title, 
+            tdc1, becameceo, leftofc, joined_co, age, gender, ticker,
+            opt_unex_exer_num, opt_unex_unexer_num, 
+            opt_unex_exer_est_val, opt_unex_unexer_est_val, 
+            shrown_excl_opts, option_awards_num
         FROM {config.WRDS_EXECUCOMP_ANNCOMP}
         WHERE year >= {start_year}
     """
@@ -307,18 +329,54 @@ def fetch_execucomp(db, start_year: int = config.UNIVERSE_START_YEAR) -> pd.Data
 # BoardEx Composition
 # ---------------------------------------------------------------------
 
-def fetch_boardex_directors(db) -> pd.DataFrame:
-    """Fetch BoardEx Directors (Composition)."""
-    query = f"""
-        SELECT
-            companyid     AS company_id,
-            directorid    AS director_id,
-            datestartrole AS date_start,
-            dateendrole   AS date_end,
-            rolename      AS role_name
-        FROM {config.WRDS_BOARDEX_DIRECTORS}
+def fetch_boardex_directors(db, director_ids: list = None) -> pd.DataFrame:
     """
-    df = db.raw_sql(query)
+    Fetch BoardEx Directors (Composition).
+    Optional: Filter by list of director IDs.
+    """
+    if director_ids:
+        # Chunking for large lists
+        chunk_size = 1000
+        dfs = []
+        unique_ids = list(set(director_ids))
+        
+        for i in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[i:i + chunk_size]
+            ids_str = ",".join([f"'{str(x)}'" for x in chunk])
+            
+            query = f"""
+                SELECT
+                    companyid     AS company_id,
+                    directorid    AS director_id,
+                    datestartrole AS date_start,
+                    dateendrole   AS date_end,
+                    rolename      AS role_name
+                FROM {config.WRDS_BOARDEX_DIRECTORS}
+                WHERE directorid IN ({ids_str})
+            """
+            try:
+                dfs.append(db.raw_sql(query))
+            except Exception as e:
+                logger.warning(f"Failed to fetch BoardEx directors chunk: {e}")
+        
+        if not dfs:
+            return pd.DataFrame()
+            
+        df = pd.concat(dfs, ignore_index=True)
+        
+    else:
+        # Fetch all (Legacy behavior)
+        query = f"""
+            SELECT
+                companyid     AS company_id,
+                directorid    AS director_id,
+                datestartrole AS date_start,
+                dateendrole   AS date_end,
+                rolename      AS role_name
+            FROM {config.WRDS_BOARDEX_DIRECTORS}
+        """
+        df = db.raw_sql(query)
+
     # Clean types immediately to avoid parquet type issues later
     df["company_id"] = df["company_id"].astype(str)
     df["director_id"] = df["director_id"].astype(str)
@@ -371,4 +429,140 @@ def fetch_boardex_announcements(db) -> pd.DataFrame:
     df = db.raw_sql(query)
     df["company_id"] = df["company_id"].astype(str)
     df["director_id"] = df["director_id"].astype(str)
+    return df
+
+# ---------------------------------------------------------------------
+# CapitalIQ People
+# ---------------------------------------------------------------------
+
+def fetch_ciq_professional(db) -> pd.DataFrame:
+    """Fetch CIQ Professional (Names)."""
+    query = f"""
+        SELECT professionalid, personid, firstname, lastname, yearborn
+        FROM {config.WRDS_CIQ_PROFESSIONAL}
+    """
+    df = db.raw_sql(query)
+    return df
+
+def fetch_ciq_career(db, person_ids: list = None) -> pd.DataFrame:
+    """
+    Fetch CIQ Professional Job History.
+    Optional: Filter by list of professional/person IDs (professionalid).
+    """
+    if person_ids:
+        chunk_size = 1000
+        dfs = []
+        unique_ids = list(set(person_ids))
+        
+        for i in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[i:i + chunk_size]
+            # professionalid is typically numeric but handled as string/int. Safe to coerce to int then str.
+            # Assuming numeric in DB, but constructing list.
+            ids_str = ",".join([str(x) for x in chunk])
+            
+            query = f"""
+                SELECT professionalid, companyid, jobtitle, startdate, enddate, companyname
+                FROM {config.WRDS_CIQ_CAREER}
+                WHERE professionalid IN ({ids_str})
+            """
+            try:
+                dfs.append(db.raw_sql(query))
+            except Exception as e:
+                logger.warning(f"Failed to fetch CIQ career chunk: {e}")
+                
+        if not dfs:
+            return pd.DataFrame()
+            
+        df = pd.concat(dfs, ignore_index=True)
+        
+    else:
+        query = f"""
+            SELECT professionalid, companyid, jobtitle, startdate, enddate, companyname
+            FROM {config.WRDS_CIQ_CAREER}
+        """
+        df = db.raw_sql(query)
+        
+    return df
+
+def fetch_wrds_people_link(db) -> pd.DataFrame:
+    """Fetch WRDS People Link table."""
+    # Using the exact variable names provided by the user for the WRDS People Link table.
+    query = f"""
+        SELECT 
+            execid, exec_lname, exec_fname, exec_mname, exec_fullname,
+            directorid, directorname, forename1, forename2, forename3, forename4, usualname, surname, suffixtitle,
+            personid, firstname, middlename, lastname, prefix, suffix, salutation,
+            score, matchStyle
+        FROM {config.WRDS_PEOPLE_LINK}
+    """
+    return db.raw_sql(query)
+
+# ---------------------------------------------------------------------
+# SDC Platinum (M&A)
+# ---------------------------------------------------------------------
+
+def fetch_sdc_ma(db, start_date: str = config.UNIVERSE_START_DATE) -> pd.DataFrame:
+    """
+    Fetch SDC Mergers & Acquisitions data.
+    Key columns: deal_no (Deal Number), da (Date Announced), de (Date Effective), 
+    val (Value), acup (Acquirer CUSIP), tcup (Target CUSIP).
+    """
+    # Note: SDC column names in WRDS often vary (e.g., deal_no vs deal_number).
+    # Using 'deal_no' as it's common. If this fails, we might need 'deal_number'.
+    # We fetch basic deal info.
+    query = f"""
+        SELECT 
+            deal_no, da, de, val, acup, tcup, an, tn,
+            form, attitude, cross_border,
+            asic, tsic, pct_cash, pct_stock, status
+        FROM {config.WRDS_SDC_MA}
+        WHERE da >= '{start_date}'
+    """
+    return db.raw_sql(query)
+
+# ---------------------------------------------------------------------
+# BoardEx Company Info
+# ---------------------------------------------------------------------
+
+def fetch_boardex_company_names(db, company_ids: list = None) -> pd.DataFrame:
+    """
+    Fetch BoardEx Company Names.
+    Optional: Filter by list of Board IDs (Company IDs).
+    """
+    if company_ids:
+        chunk_size = 1000
+        dfs = []
+        unique_ids = list(set(company_ids))
+        
+        for i in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[i:i + chunk_size]
+            ids_str = ",".join([f"'{str(x)}'" for x in chunk])
+            
+            query = f"""
+                SELECT boardid, companyname
+                FROM {config.WRDS_BOARDEX_PROFILE}
+                WHERE boardid IN ({ids_str})
+            """
+            try:
+                dfs.append(db.raw_sql(query))
+            except Exception as e:
+                logger.warning(f"Failed to fetch BoardEx company names chunk: {e}")
+        
+        if not dfs:
+            return pd.DataFrame(columns=['boardid', 'companyname'])
+            
+        df = pd.concat(dfs, ignore_index=True)
+        
+    else:
+        # Fetch all
+        query = f"""
+            SELECT boardid, companyname
+            FROM {config.WRDS_BOARDEX_PROFILE}
+        """
+        df = db.raw_sql(query)
+        
+    if 'boardid' in df.columns:
+        df = df.rename(columns={'boardid': 'company_id'})
+    
+    df['company_id'] = df['company_id'].astype(str)
     return df

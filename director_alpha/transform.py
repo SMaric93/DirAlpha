@@ -12,9 +12,51 @@ def clean_id(series: pd.Series) -> pd.Series:
     """
     return series.astype(str).str.replace(r"\.0$", "", regex=True)
 
-def normalize_gvkey(series: pd.Series) -> pd.Series:
-    """Ensure GVKEY is a 6-digit zero-padded string."""
-    return series.astype(str).str.zfill(6)
+def normalize_gvkey(series: pd.Series, fill_na: Optional[str] = None) -> pd.Series:
+    """
+    Ensure GVKEY is a 6-digit zero-padded string.
+    
+    Handles:
+    - Float-to-string conversion artifacts (trailing '.0')
+    - NA/missing values (optionally replaced with fill_na)
+    - Numeric inputs
+    
+    Args:
+        series: Series containing GVKEY values
+        fill_na: Optional value to replace NAs with before normalization.
+                 If None, NAs are preserved as 'nan' strings.
+    
+    Returns:
+        Series with normalized 6-digit zero-padded GVKEY strings
+    """
+    result = series.copy()
+    if fill_na is not None:
+        result = result.fillna(fill_na)
+    return (
+        result
+        .astype(str)
+        .str.replace(r'\.0$', '', regex=True)  # Handle float conversion artifacts
+        .str.zfill(6)
+    )
+
+
+def normalize_gvkey_columns(df: pd.DataFrame, columns: List[str], fill_na: Optional[str] = None) -> pd.DataFrame:
+    """
+    Normalize multiple GVKEY columns in a DataFrame.
+    
+    Args:
+        df: DataFrame containing GVKEY columns
+        columns: List of column names to normalize
+        fill_na: Optional value to replace NAs with
+    
+    Returns:
+        DataFrame with normalized GVKEY columns
+    """
+    df = df.copy()
+    for col in columns:
+        if col in df.columns:
+            df[col] = normalize_gvkey(df[col], fill_na=fill_na)
+    return df
 
 def normalize_ticker(series: pd.Series) -> pd.Series:
     """Ensure ticker is uppercase stripped string."""

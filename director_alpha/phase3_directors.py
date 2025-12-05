@@ -381,6 +381,14 @@ def build_board_roster(
         logger.warning("Board roster is empty after date filtering.")
         return roster
 
+    # Deduplicate: One entry per director per spell. 
+    # A director might have multiple roles (rows) active at appointment.
+    # We keep the one with the earliest start date (longest tenure).
+    roster = roster.sort_values("date_start").drop_duplicates(
+        subset=["spell_id", "director_id"], 
+        keep="first"
+    )
+
     roster["director_id"] = transform.clean_id(roster["director_id"])
     return roster
 

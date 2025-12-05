@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from . import config, log
+from . import config, log, transform
 
 logger = log.logger
 
@@ -16,8 +16,8 @@ def calculate_tenure_performance(spells: pd.DataFrame, firm_year: pd.DataFrame) 
     spells['fyear_appt'] = spells['appointment_date'].dt.year 
     
     # Ensure types match
-    spells['gvkey'] = spells['gvkey'].astype(str).str.zfill(6)
-    firm_year['gvkey'] = firm_year['gvkey'].astype(str).str.zfill(6)
+    spells['gvkey'] = transform.normalize_gvkey(spells['gvkey'])
+    firm_year['gvkey'] = transform.normalize_gvkey(firm_year['gvkey'])
     
     # Merge spells with firm-year data
     merged = pd.merge(spells[['spell_id', 'gvkey', 'fyear_appt']], 
@@ -46,8 +46,8 @@ def get_controls(spells: pd.DataFrame, firm_year: pd.DataFrame) -> pd.DataFrame:
     spells['target_year'] = spells['fyear_appt'] - 1
     
     # Ensure types match
-    spells['gvkey'] = spells['gvkey'].astype(str).str.zfill(6)
-    firm_year['gvkey'] = firm_year['gvkey'].astype(str).str.zfill(6)
+    spells['gvkey'] = transform.normalize_gvkey(spells['gvkey'])
+    firm_year['gvkey'] = transform.normalize_gvkey(firm_year['gvkey'])
 
     merged = pd.merge(spells[['spell_id', 'gvkey', 'target_year']], 
                       firm_year, 
@@ -59,6 +59,38 @@ def get_controls(spells: pd.DataFrame, firm_year: pd.DataFrame) -> pd.DataFrame:
     cols = ['spell_id', 'size', 'leverage', 'rd_intensity', 'capex_intensity', 'firm_age']
     cols = [c for c in cols if c in merged.columns]
     
+    return merged[cols]
+
+def get_compensation(spells: pd.DataFrame, comp_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Get CEO compensation incentives (Delta/Vega) at the appointment year (T).
+    """
+    spells = spells.copy()
+    comp_df = comp_df.copy()
+    
+    spells['appointment_date'] = pd.to_datetime(spells['appointment_date'])
+    spells['year'] = spells['appointment_date'].dt.year
+    
+    # Ensure types
+    spells['gvkey'] = transform.normalize_gvkey(spells['gvkey'])
+    comp_df['gvkey'] = transform.normalize_gvkey(comp_df['gvkey'])
+    
+    # Merge on gvkey, year, execid (to ensure we match the right CEO if multiple)
+    # comp_df has 'gvkey', 'year', 'execid'
+    
+    # Ensure execid types
+    spells['execid'] = pd.to_numeric(spells['execid'], errors='coerce')
+    comp_df['execid'] = pd.to_numeric(comp_df['execid'], errors='coerce')
+    
+    merged = pd.merge(
+        spells[['spell_id', 'gvkey', 'year', 'execid']],
+        comp_df,
+        on=['gvkey', 'year', 'execid'],
+        how='left'
+    )
+    
+    # Select columns
+    cols = ['spell_id', 'delta', 'vega', 'total_delta_shares', 'total_option_vega']
     return merged[cols]
 
 def run_phase4():
@@ -81,6 +113,13 @@ def run_phase4():
              return
 
         firm_year = pd.read_parquet(config.FIRM_YEAR_PERFORMANCE_PATH)
+        
+        # Load Compensation
+        comp_df = pd.DataFrame()
+        if config.FIRM_YEAR_COMPENSATION_PATH.exists():
+            comp_df = pd.read_parquet(config.FIRM_YEAR_COMPENSATION_PATH)
+        else:
+            logger.warning(f"Compensation file missing: {config.FIRM_YEAR_COMPENSATION_PATH}")
 
     except Exception as e:
         logger.error(f"Error loading intermediate files: {e}")
@@ -91,8 +130,14 @@ def run_phase4():
     
     # 2. Get Controls (T-1)
     controls = get_controls(spells, firm_year)
+    
+    # 3. Get Compensation (T)
+    if not comp_df.empty:
+        compensation = get_compensation(spells, comp_df)
+    else:
+        compensation = pd.DataFrame(columns=['spell_id'])
 
-    # 3. Load Event Study Results (Phase 3b)
+    # 4. Load Event Study Results (Phase 3b)
     if config.EVENT_STUDY_RESULTS_PATH.exists():
         try:
             event_study = pd.read_parquet(config.EVENT_STUDY_RESULTS_PATH)
@@ -106,19 +151,20 @@ def run_phase4():
         logger.warning("Event study results not found. Proceeding without returns.")
         event_study = pd.DataFrame(columns=['spell_id'])
     
-    # 4. Merge everything onto Linkage
+    # 5. Merge everything onto Linkage
     logger.info("Merging datasets...")
     
     # First merge spell attributes to spells
     spells_full = pd.merge(spells, perf, on='spell_id', how='left')
     spells_full = pd.merge(spells_full, controls, on='spell_id', how='left')
+    spells_full = pd.merge(spells_full, compensation, on='spell_id', how='left')
     spells_full = pd.merge(spells_full, event_study, on='spell_id', how='left')
     
     # Now merge to Linkage
     # Linkage: spell_id, directorid, company_id...
     # Ensure keys match
-    spells_full['gvkey'] = spells_full['gvkey'].astype(str).str.zfill(6)
-    linkage['gvkey'] = linkage['gvkey'].astype(str).str.zfill(6)
+    spells_full['gvkey'] = transform.normalize_gvkey(spells_full['gvkey'])
+    linkage['gvkey'] = transform.normalize_gvkey(linkage['gvkey'])
     
     analysis = pd.merge(linkage, spells_full, on=['spell_id', 'gvkey', 'appointment_date'], how='inner')
     
